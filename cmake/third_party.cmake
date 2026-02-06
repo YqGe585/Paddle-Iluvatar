@@ -1,0 +1,1 @@
+../Paddle/cmake/third_party.cmake

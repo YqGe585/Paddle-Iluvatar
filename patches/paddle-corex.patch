@@ -1,0 +1,1485 @@
+diff --git a/paddle/fluid/operators/collective/recv_v2_op.cu.cc b/paddle/fluid/operators/collective/recv_v2_op.cu.cc
+index 8fa6b3ae60..f63217421f 100644
+--- a/paddle/fluid/operators/collective/recv_v2_op.cu.cc
++++ b/paddle/fluid/operators/collective/recv_v2_op.cu.cc
+@@ -224,7 +224,7 @@ PD_REGISTER_STRUCT_KERNEL(recv_v2,
+                           float,
+                           double,
+ #if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
+-    defined(PADDLE_WITH_HIP)
++    defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_COREX)
+                           phi::dtype::bfloat16,
+ #endif
+                           int,
+diff --git a/paddle/fluid/operators/collective/send_v2_op.cu.cc b/paddle/fluid/operators/collective/send_v2_op.cu.cc
+index f7720671d2..4a6cd3868d 100644
+--- a/paddle/fluid/operators/collective/send_v2_op.cu.cc
++++ b/paddle/fluid/operators/collective/send_v2_op.cu.cc
+@@ -203,7 +203,7 @@ PD_REGISTER_STRUCT_KERNEL(send_v2,
+                           float,
+                           double,
+ #if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
+-    defined(PADDLE_WITH_HIP)
++    defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_COREX)
+                           phi::dtype::bfloat16,
+ #endif
+                           int,
+diff --git a/paddle/fluid/platform/device/gpu/nccl_helper.h b/paddle/fluid/platform/device/gpu/nccl_helper.h
+index 93e1278861..da47b74e70 100644
+--- a/paddle/fluid/platform/device/gpu/nccl_helper.h
++++ b/paddle/fluid/platform/device/gpu/nccl_helper.h
+@@ -62,7 +62,7 @@ inline ncclDataType_t ToNCCLDataType(framework::proto::VarType::Type type) {
+   } else if (type == framework::proto::VarType::BOOL) {
+     return ncclUint8;
+ #if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
+-    defined(PADDLE_WITH_HIP)
++    defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_COREX)
+   } else if (type == framework::proto::VarType::BF16) {
+     return ncclBfloat16;
+ #endif
+diff --git a/paddle/phi/backends/dynload/cudnn.cc b/paddle/phi/backends/dynload/cudnn.cc
+index 5a18808d47..749073ce38 100644
+--- a/paddle/phi/backends/dynload/cudnn.cc
++++ b/paddle/phi/backends/dynload/cudnn.cc
+@@ -25,6 +25,10 @@ void* cudnn_dso_handle = nullptr;
+ 
+ CUDNN_DNN_ROUTINE_EACH(DEFINE_WRAP);
+ 
++#ifdef CUDNN_DNN_ROUTINE_EACH_AFTER_R7_LESS_R8
++CUDNN_DNN_ROUTINE_EACH_AFTER_R7_LESS_R8(DEFINE_WRAP);
++#endif
++
+ #ifdef CUDNN_DNN_ROUTINE_EACH_R7
+ CUDNN_DNN_ROUTINE_EACH_R7(DEFINE_WRAP);
+ #endif
+@@ -57,6 +61,10 @@ CUDNN_DNN_ROUTINE_EACH_AFTER_TWO_R7_REMOVED_IN_E9(DEFINE_WRAP);
+ CUDNN_DNN_ROUTINE_EACH_R9(DEFINE_WRAP);
+ #endif
+ 
++#ifdef CUDNN_DNN_ROUTINE_EACH_ATTN
++CUDNN_DNN_ROUTINE_EACH_ATTN(DEFINE_WRAP)
++#endif
++
+ bool HasCUDNN() {
+   std::call_once(cudnn_dso_flag,
+                  []() { cudnn_dso_handle = GetCUDNNDsoHandle(); });
+diff --git a/paddle/phi/backends/gpu/cuda/cuda_device_function.h b/paddle/phi/backends/gpu/cuda/cuda_device_function.h
+index 092365a961..6b05da600b 100644
+--- a/paddle/phi/backends/gpu/cuda/cuda_device_function.h
++++ b/paddle/phi/backends/gpu/cuda/cuda_device_function.h
+@@ -134,7 +134,7 @@ __forceinline__ __device__ phi::dtype::complex<double> CudaShuffleXorSync(
+ 
+ template <typename T>
+ __forceinline__ __device__ T
+-CudaShuffleSync(unsigned mask, T val, int src_line, int width = 32) {
++CudaShuffleSync(unsigned mask, T val, int src_line, int width = 64) {
+   return __shfl_sync(mask, val, src_line, width);
+ }
+ 
+@@ -151,7 +151,7 @@ __device__ T reduceSum(T val, int tid, int len) {
+   // I use Warp-Level Parallelism and assume the Warp size
+   // is 32 which may be different for different GPU,
+   // but most card's warp size is 32.
+-  const int warpSize = 32;
++  const int warpSize = 64;
+   __shared__ T shm[warpSize];
+   unsigned mask = 0u;
+   CREATE_SHFL_MASK(mask, tid < len);
+diff --git a/paddle/phi/backends/gpu/cuda/cuda_graph.cc b/paddle/phi/backends/gpu/cuda/cuda_graph.cc
+index 1c4f13e6b4..a90c0f6d21 100644
+--- a/paddle/phi/backends/gpu/cuda/cuda_graph.cc
++++ b/paddle/phi/backends/gpu/cuda/cuda_graph.cc
+@@ -199,7 +199,7 @@ inline void sync_streams(gpuStream_t to_record, gpuStream_t to_wait) {
+   PADDLE_ENFORCE_GPU_SUCCESS(
+       cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+   PADDLE_ENFORCE_GPU_SUCCESS(cudaEventRecord(event, to_record));
+-  PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamWaitEvent(to_wait, event));
++  PADDLE_ENFORCE_GPU_SUCCESS(cudaStreamWaitEvent(to_wait, event, 0));
+   PADDLE_ENFORCE_GPU_SUCCESS(cudaEventDestroy(event));
+ }
+ 
+diff --git a/paddle/phi/backends/gpu/cuda/cuda_helper.h b/paddle/phi/backends/gpu/cuda/cuda_helper.h
+index dfd3945e9a..08eda4978c 100644
+--- a/paddle/phi/backends/gpu/cuda/cuda_helper.h
++++ b/paddle/phi/backends/gpu/cuda/cuda_helper.h
+@@ -82,7 +82,7 @@ cudaDataType_t ToCudaDataType() {
+     return CUDA_R_64F;
+   } else if (std::is_same<T, phi::dtype::float16>::value) {
+     return CUDA_R_16F;
+-#if CUDA_VERSION >= 11000
++#if CUDA_VERSION >= 11000 || defined(PADDLE_WITH_COREX)
+   } else if (std::is_same<T, phi::dtype::bfloat16>::value) {
+     return CUDA_R_16BF;
+ #endif
+diff --git a/paddle/phi/backends/gpu/cuda/cudnn_desc.h b/paddle/phi/backends/gpu/cuda/cudnn_desc.h
+index ce038ecec9..c6b4c3797b 100644
+--- a/paddle/phi/backends/gpu/cuda/cudnn_desc.h
++++ b/paddle/phi/backends/gpu/cuda/cudnn_desc.h
+@@ -77,7 +77,7 @@ inline cudnnDataType_t ToCudnnDataType(const DataType& t) {
+       type = CUDNN_DATA_FP8_E5M2;
+       break;
+ #endif
+-#if CUDNN_VERSION_MIN(8, 1, 0)
++#if CUDNN_VERSION_MIN(8, 1, 0) || defined(PADDLE_WITH_COREX)
+     case DataType::BFLOAT16:
+       type = CUDNN_DATA_BFLOAT16;
+       break;
+@@ -167,12 +167,26 @@ class TensorDescriptor {
+     } else {
+       transformed_dims = dims;
+     }
++#ifdef PADDLE_WITH_COREX
++    std::vector<int> strides(dims.size());
++    strides[dims.size() - 1] = 1;
++    for (int i = dims.size() - 2; i >= 0; i--) {
++      strides[i] = dims[i + 1] * strides[i + 1];
++    }
++    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
++        desc_.get(),
++        dtype,
++        transformed_dims.size(),
++        transformed_dims.data(),
++        strides.data()));
++#else
+     PADDLE_ENFORCE_GPU_SUCCESS(
+         phi::dynload::cudnnSetTensorNdDescriptorEx(desc_.get(),
+                                                    format,
+                                                    dtype,
+                                                    transformed_dims.size(),
+                                                    transformed_dims.data()));
++#endif-
+   }
+ 
+   void set(const DenseTensor& tensor, const cudnnTensorFormat_t format) {
+diff --git a/paddle/phi/backends/gpu/cuda/cudnn_helper.h b/paddle/phi/backends/gpu/cuda/cudnn_helper.h
+index a36bcf8d2c..d844f593a5 100644
+--- a/paddle/phi/backends/gpu/cuda/cudnn_helper.h
++++ b/paddle/phi/backends/gpu/cuda/cudnn_helper.h
+@@ -117,7 +117,7 @@ class CudnnDataType<phi::dtype::float8_e4m3fn> {
+ #endif
+ 
+ // CUDNN_DATA_BFLOAT16 is not valid before cudnn8.1
+-#if CUDNN_VERSION_MIN(8, 1, 0)
++#if CUDNN_VERSION_MIN(8, 1, 0) || defined(PADDLE_WITH_COREX)
+ template <>
+ class CudnnDataType<phi::dtype::bfloat16> {
+  public:
+diff --git a/paddle/phi/backends/gpu/gpu_launch_config.h b/paddle/phi/backends/gpu/gpu_launch_config.h
+index f679e46add..f43d03fcf2 100644
+--- a/paddle/phi/backends/gpu/gpu_launch_config.h
++++ b/paddle/phi/backends/gpu/gpu_launch_config.h
+@@ -37,6 +37,10 @@
+ // CUDA performs better when thread_per_block is between [64, 512]
+ #define PREDEFINED_BLOCK_SIZE 512
+ 
++#ifdef PADDLE_WITH_COREX
++#define MAX_YZ_DIM_SIZE 65535
++#endif
++
+ namespace phi {
+ namespace backends {
+ namespace gpu {
+@@ -190,6 +194,9 @@ inline GpuLaunchConfig GetGpuLaunchConfig2D(const phi::GPUContext& dev_ctx,
+   int grid_x = std::min<int64_t>(DivUp<int64_t>(x_dim, block_cols), max_blocks);
+   int grid_y = std::min<int64_t>(max_blocks / grid_x,
+                                  std::max<int64_t>(y_dim / block_rows, 1));
++#ifdef PADDLE_WITH_COREX
++  grid_y = std::min(grid_y, std::max(MAX_YZ_DIM_SIZE / block_rows, 1));
++#endif
+ 
+   config.block_per_grid = dim3(grid_x, grid_y, 1);
+   return config;
+@@ -219,10 +226,13 @@ inline GpuLaunchConfig GetGpuLaunchConfig3D(const phi::GPUContext& dev_ctx,
+   std::array<unsigned int, 3> max_grid_dim = dev_ctx.GetCUDAMaxGridDimSize();
+   unsigned int grid_x =
+       std::min(max_grid_dim[0], DivUp<unsigned int>(width, block_x));
+-  unsigned int grid_y =
+-      std::min(max_grid_dim[1], DivUp<unsigned int>(height, block_y));
+-  unsigned int grid_z =
++  int grid_y = std::min(max_grid_dim[1], DivUp<unsigned int>(height, block_y));
++  int grid_z =
+       std::min(max_grid_dim[2], DivUp<unsigned int>(num_img, block_z * 4));
++#ifdef PADDLE_WITH_COREX
++  grid_y = std::min(grid_y, std::max(MAX_YZ_DIM_SIZE / block_y, 1));
++  grid_z = std::min(grid_y, std::max(MAX_YZ_DIM_SIZE / block_z, 1));
++#endif
+ 
+   const int capability = dev_ctx.GetComputeCapability();
+   GpuLaunchConfig config;
+diff --git a/paddle/phi/backends/gpu/gpu_primitives.h b/paddle/phi/backends/gpu/gpu_primitives.h
+index a7df8a4023..d4ff45d8d5 100644
+--- a/paddle/phi/backends/gpu/gpu_primitives.h
++++ b/paddle/phi/backends/gpu/gpu_primitives.h
+@@ -134,13 +134,38 @@ CUDA_ATOMIC_WRAPPER(Add, int16_t) {
+ // It because unsigned long long int is not necessarily uint64_t
+ USE_CUDA_ATOMIC(Add, unsigned long long int);  // NOLINT
+ 
++__device__ int device_mutex = 1;
++static inline __device__ unsigned long long int atomicAdd64(  // NOLINT
++    unsigned long long int *address,                          // NOLINT
++    unsigned long long int val) {                             // NOLINT
++  unsigned long long int old = *address;                      // NOLINT
++
++  int waiting = 1;
++  while (waiting) {
++    if (atomicExch(&device_mutex, 0)) {  // getting global mutex
++      waiting = 0;
++      old = *address;
++      *address += val;
++      atomicExch(&device_mutex, 1);
++    }
++  }
++
++  return old;
++}
++
+ CUDA_ATOMIC_WRAPPER(Add, int64_t) {
+   // Here, we check long long int must be int64_t.
+   static_assert(sizeof(int64_t) == sizeof(long long int),  // NOLINT
+                 "long long should be int64");
++#ifdef PADDLE_WITH_COREX
++  return atomicAdd64(
++      reinterpret_cast<unsigned long long int *>(address),  // NOLINT
++      static_cast<unsigned long long int>(val));            // NOLINT
++#else
+   return CudaAtomicAdd(
+       reinterpret_cast<unsigned long long int *>(address),  // NOLINT
+       static_cast<unsigned long long int>(val));            // NOLINT
++#endif
+ }
+ 
+ #if defined(__HIPCC__) || (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 600)
+diff --git a/paddle/phi/backends/gpu/gpu_types.h b/paddle/phi/backends/gpu/gpu_types.h
+index 0f7295fcf2..1ceb0ad6e3 100644
+--- a/paddle/phi/backends/gpu/gpu_types.h
++++ b/paddle/phi/backends/gpu/gpu_types.h
+@@ -59,6 +59,9 @@ DECLARE_TYPE_FOR_GPU(dnnActivationMode_t,
+                      cudnnActivationMode_t,
+                      miopenActivationMode_t);
+ #endif
++#ifdef PADDLE_WITH_COREX
++typedef CUfunc_st* cudaFunction_t;
++#endif
+ DECLARE_TYPE_FOR_GPU(gpuGraph_t, cudaGraph_t, hipGraph_t);
+ DECLARE_TYPE_FOR_GPU(gpuFunction_t, cudaFunction_t, hipFunction_t);
+ DECLARE_TYPE_FOR_GPU(gpuGraphExec_t, cudaGraphExec_t, hipGraphExec_t);
+@@ -156,11 +159,13 @@ DECLARE_FUNCTION_FOR_GPU(gpuStreamEndCapture,
+ DECLARE_FUNCTION_FOR_GPU(gpuStreamGetCaptureInfo,
+                          cudaStreamGetCaptureInfo,
+                          hipStreamGetCaptureInfo);
++#ifndef PADDLE_WITH_COREX
+ DECLARE_FUNCTION_FOR_GPU(gpuEventCreateWithFlags,
+                          cudaEventCreateWithFlags,
+                          hipEventCreateWithFlags);
+ DECLARE_FUNCTION_FOR_GPU(gpuEventRecord, cudaEventRecord, hipEventRecord);
+ DECLARE_FUNCTION_FOR_GPU(gpuEventDestroy, cudaEventDestroy, hipEventDestroy);
++#endif
+ DECLARE_FUNCTION_FOR_GPU(gpuEventQuery, cudaEventQuery, hipEventQuery);
+ DECLARE_FUNCTION_FOR_GPU(gpuEventSynchronize,
+                          cudaEventSynchronize,
+diff --git a/paddle/phi/core/distributed/nccl_tools.cc b/paddle/phi/core/distributed/nccl_tools.cc
+index f4b268b14c..dec2e6ea8c 100644
+--- a/paddle/phi/core/distributed/nccl_tools.cc
++++ b/paddle/phi/core/distributed/nccl_tools.cc
+@@ -63,7 +63,7 @@ std::string NCCLDTypeToString(ncclDataType_t dtype) {
+   PD_NCCL_DTYPE_TO_STR(ncclHalf, "float16");
+   PD_NCCL_DTYPE_TO_STR(ncclFloat16, "float16");
+ #if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
+-    defined(PADDLE_WITH_HIP)
++    defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_COREX)
+   PD_NCCL_DTYPE_TO_STR(ncclBfloat16, "bfloat16");
+ #endif
+   PD_NCCL_DTYPE_TO_STR(ncclDouble, "float64");
+diff --git a/paddle/phi/core/enforce.h b/paddle/phi/core/enforce.h
+index 024a7de73e..907ffd5f25 100644
+--- a/paddle/phi/core/enforce.h
++++ b/paddle/phi/core/enforce.h
+@@ -97,7 +97,7 @@ inline bool is_error(bool stat) { return !stat; }
+ 
+ void ThrowWarnInternal(const std::string& message);
+ 
+-#if defined(__CUDA_ARCH__)
++#if defined(__CUDA_ARCH__) && !defined(PADDLE_WITH_COREX)
+ // For cuda, the assertions can affect performance and it is therefore
+ // recommended to disable them in production code
+ // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#assertion
+@@ -112,6 +112,10 @@ void ThrowWarnInternal(const std::string& message);
+       asm("trap;");                                                \
+     }                                                              \
+   } while (0)
++#elif defined(PADDLE_WITH_COREX)
++#define PADDLE_ENFORCE(_IS_NOT_ERROR, __FORMAT, ...) \
++  do {                                               \
++  } while (0)
+ #elif defined(__HIPCC__)
+ #define PADDLE_ENFORCE(_IS_NOT_ERROR, __FORMAT, ...)               \
+   do {                                                             \
+diff --git a/paddle/phi/core/utils/data_type.h b/paddle/phi/core/utils/data_type.h
+index 9da5940434..e0df0c06ca 100644
+--- a/paddle/phi/core/utils/data_type.h
++++ b/paddle/phi/core/utils/data_type.h
+@@ -258,7 +258,7 @@ inline ncclDataType_t ToNCCLDataType(DataType type) {
+              type == DataType::FLOAT8_E5M2) {
+     return ncclUint8;
+ #if (NCCL_VERSION_CODE >= 21000 && CUDA_VERSION >= 11000) || \
+-    defined(PADDLE_WITH_HIP)
++    defined(PADDLE_WITH_HIP) || defined(PADDLE_WITH_COREX)
+   } else if (type == DataType::BFLOAT16) {
+     return ncclBfloat16;
+ #endif
+diff --git a/paddle/phi/kernels/funcs/activation_functor.h b/paddle/phi/kernels/funcs/activation_functor.h
+index 9c9ab5dff9..ecf4e8f5e8 100644
+--- a/paddle/phi/kernels/funcs/activation_functor.h
++++ b/paddle/phi/kernels/funcs/activation_functor.h
+@@ -3727,12 +3727,14 @@ struct CudaReciprocalFunctor<ComplexType<T>>
+       return ::isnan(real) || ::isnan(imag);
+     };
+     if (either_nan(x.real, x.imag) || both_inf(x.real, x.imag)) {
++#ifndef PADDLE_WITH_COREX
+       // If either is Nan or both are infinite, return {nan, nan}
+       if constexpr (std::is_same<T, float>::value) {
+         return ComplexType<T>(nanf(""), nanf(""));
+       } else if constexpr (std::is_same<T, double>::value) {
+         return ComplexType<T>(nan(""), nan(""));
+       }
++#endif
+     } else if (either_inf(x.real, x.imag)) {
+       // If either is Inf, return {0, 0}
+       return ComplexType<T>(static_cast<T>(0), static_cast<T>(0));
+@@ -5247,6 +5249,23 @@ struct CudaHardSigmoidGradFunctor : public BaseActivationFunctor<T> {
+   }
+ };
+ 
++#ifdef PADDLE_WITH_COREX
++template <typename T>
++__device__ __forceinline__
++    std::conditional_t<std::is_integral<T>::value, float, T>
++    log_local(T x) {
++  static_assert(!std::is_same<T, float>::value,
++                "this template must be used with float or less precise type");
++
++  return static_cast<std::conditional_t<std::is_integral<T>::value, float, T>>(
++      ::log(static_cast<float>(x)));
++}
++
++template <>
++__device__ __forceinline__ float log_local<float>(float x) {
++  return ::log(x);
++}
++#else
+ template <typename T>
+ __device__ __forceinline__
+     std::conditional_t<std::is_integral<T>::value, float, T>
+@@ -5262,6 +5281,7 @@ template <>
+ __device__ __forceinline__ double log_local<double>(double x) {
+   return ::log(x);
+ }
++#endif
+ 
+ template <typename T>
+ struct CudaLogFunctor : public BaseActivationFunctor<T> {
+diff --git a/paddle/phi/kernels/funcs/affine_grid_utils.h b/paddle/phi/kernels/funcs/affine_grid_utils.h
+index 149b5f3d76..eac6f4b942 100644
+--- a/paddle/phi/kernels/funcs/affine_grid_utils.h
++++ b/paddle/phi/kernels/funcs/affine_grid_utils.h
+@@ -16,7 +16,9 @@
+ 
+ #include "paddle/phi/core/dense_tensor.h"
+ #include "paddle/phi/core/device_context.h"
++#ifndef PADDLE_WITH_COREX
+ #include "paddle/phi/kernels/funcs/blas/blas.h"
++#endif
+ #include "paddle/phi/kernels/funcs/eigen/common.h"
+ #include "paddle/phi/kernels/funcs/math_function.h"
+ 
+diff --git a/paddle/phi/kernels/funcs/blas/blas_impl.cu.h b/paddle/phi/kernels/funcs/blas/blas_impl.cu.h
+index fc86cc09d1..6295ff91ac 100644
+--- a/paddle/phi/kernels/funcs/blas/blas_impl.cu.h
++++ b/paddle/phi/kernels/funcs/blas/blas_impl.cu.h
+@@ -1755,7 +1755,7 @@ inline void Blas<phi::GPUContext>::GEMM(CBLAS_TRANSPOSE transA,
+                                         const phi::bfloat16 *B,
+                                         phi::bfloat16 beta,
+                                         phi::bfloat16 *C) const {
+-#if CUDA_VERSION >= 11000
++#if CUDA_VERSION >= 11000 || defined(PADDLE_WITH_COREX)
+   // Note that cublas follows fortran order, so the order is different from
+   // the cblas convention.
+   int64_t lda = (transA == CblasNoTrans) ? K : M;
+@@ -1765,6 +1765,7 @@ inline void Blas<phi::GPUContext>::GEMM(CBLAS_TRANSPOSE transA,
+   cublasOperation_t cuTransB =
+       (transB == CblasNoTrans) ? CUBLAS_OP_N : CUBLAS_OP_T;
+ 
++#ifndef PADDLE_WITH_COREX
+   PADDLE_ENFORCE_GE(
+       dev_ctx_.GetComputeCapability(),
+       80,
+@@ -1772,6 +1773,7 @@ inline void Blas<phi::GPUContext>::GEMM(CBLAS_TRANSPOSE transA,
+           "cublas bf16 gemm requires GPU compute capability >= 80,"
+           "but received %d",
+           dev_ctx_.GetComputeCapability()));
++#endif
+ 
+   float h_alpha = static_cast<float>(alpha);
+   float h_beta = static_cast<float>(beta);
+@@ -2293,12 +2295,13 @@ inline void Blas<phi::GPUContext>::GEMM(bool transA,
+                                         phi::bfloat16 beta,
+                                         phi::bfloat16 *C,
+                                         int ldc) const {
+-#if CUDA_VERSION >= 11000
++#if CUDA_VERSION >= 11000 || defined(PADDLE_WITH_COREX)
+   // Note that cublas follows fortran order, so the order is different from
+   // the cblas convention.
+   cublasOperation_t cuTransA = transA ? CUBLAS_OP_T : CUBLAS_OP_N;
+   cublasOperation_t cuTransB = transB ? CUBLAS_OP_T : CUBLAS_OP_N;
+ 
++#ifndef PADDLE_WITH_COREX
+   PADDLE_ENFORCE_GE(
+       dev_ctx_.GetComputeCapability(),
+       80,
+@@ -2306,6 +2309,7 @@ inline void Blas<phi::GPUContext>::GEMM(bool transA,
+           "cublas bf16 gemm requires GPU compute capability >= 80,"
+           "but received %d",
+           dev_ctx_.GetComputeCapability()));
++#endif
+ 
+   float h_alpha = static_cast<float>(alpha);
+   float h_beta = static_cast<float>(beta);
+@@ -2802,7 +2806,7 @@ inline void Blas<phi::GPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+                                                int64_t batchCount,
+                                                int64_t strideA,
+                                                int64_t strideB) const {
+-#if CUDA_VERSION >= 11000
++#if CUDA_VERSION >= 11000 || defined(PADDLE_WITH_COREX)
+   // Note that cublas follows fortran order, so the order is different from
+   // the cblas convention.
+   int64_t lda = (transA == CblasNoTrans) ? K : M;
+@@ -2881,7 +2885,11 @@ inline void Blas<phi::GPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+                                                    static_cast<int>(ldc),
+                                                    strideC,
+                                                    static_cast<int>(batchCount),
++#ifdef PADDLE_WITH_COREX
++                                                   CUDA_R_32F,
++#else
+                                                    CUBLAS_COMPUTE_32F,
++#endif
+                                                    algo));
+     });
+   }
+@@ -3175,7 +3183,7 @@ inline void Blas<phi::GPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+                                                phi::bfloat16 beta,
+                                                phi::bfloat16 **C,
+                                                int batchCount) const {
+-#if CUDA_VERSION >= 11000
++#if CUDA_VERSION >= 11000 || defined(PADDLE_WITH_COREX)
+   // Note that cublas follows fortran order, so the order is different from
+   // the cblas convention.
+   int lda = (transA == CblasNoTrans) ? K : M;
+@@ -3186,6 +3194,7 @@ inline void Blas<phi::GPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+   cublasOperation_t cuTransB =
+       (transB == CblasNoTrans) ? CUBLAS_OP_N : CUBLAS_OP_T;
+ 
++#ifndef PADDLE_WITH_COREX
+   PADDLE_ENFORCE_GE(
+       dev_ctx_.GetComputeCapability(),
+       80,
+@@ -3193,6 +3202,7 @@ inline void Blas<phi::GPUContext>::BatchedGEMM(CBLAS_TRANSPOSE transA,
+           "cublas bf16 gemm requires GPU compute capability >= 80,"
+           "but received %d",
+           dev_ctx_.GetComputeCapability()));
++#endif
+ 
+   float f_alpha = static_cast<float>(alpha);
+   float f_beta = static_cast<float>(beta);
+diff --git a/paddle/phi/kernels/funcs/cufft_util.h b/paddle/phi/kernels/funcs/cufft_util.h
+index df4f214e66..e31b8eb1f6 100644
+--- a/paddle/phi/kernels/funcs/cufft_util.h
++++ b/paddle/phi/kernels/funcs/cufft_util.h
+@@ -41,7 +41,11 @@ class CuFFTHandle {
+   ::cufftHandle& get() { return handle_; }
+   const ::cufftHandle& get() const { return handle_; }
+ 
++#ifdef PADDLE_WITH_COREX
++  ~CuFFTHandle() {}
++#else
+   ~CuFFTHandle() { phi::dynload::cufftDestroy(handle_); }
++#endif
+ 
+  private:
+   ::cufftHandle handle_;
+@@ -75,7 +79,11 @@ inline bool has_complex_output(FFTTransformType type) {
+ 
+ class FFTConfig {
+  public:
++#ifdef PADDLE_WITH_COREX
++  using plan_size_type = int;
++#else
+   using plan_size_type = long long int;  // NOLINT (be consistent with cufft)
++#endif
+   explicit FFTConfig(const FFTConfigKey& key)
+       : FFTConfig(
+             std::vector<int64_t>(key.sizes_, key.sizes_ + key.signal_ndim_ + 1),
+@@ -90,6 +98,22 @@ class FFTConfig {
+     std::vector<plan_size_type> signal_sizes(sizes.cbegin() + 1, sizes.cend());
+     const int signal_ndim = sizes.size() - 1;
+ 
++#ifdef PADDLE_WITH_COREX
++    cufftType exec_type = [&] {
++      if (precision == DataType::FLOAT32) {
++        switch (fft_type) {
++          case FFTTransformType::C2C:
++            return CUFFT_C2C;
++          case FFTTransformType::R2C:
++            return CUFFT_R2C;
++          case FFTTransformType::C2R:
++            return CUFFT_C2R;
++        }
++      }
++      PADDLE_THROW(phi::errors::InvalidArgument(
++          "ixFFT only support transforms of type float32"));
++    }();
++#else
+     cudaDataType itype, otype, exec_type;
+     const bool complex_input = has_complex_input(fft_type);
+     const bool complex_output = has_complex_output(fft_type);
+@@ -105,11 +129,27 @@ class FFTConfig {
+       PADDLE_THROW(common::errors::InvalidArgument(
+           "Only transforms of type float32 and float64 are supported."));
+     }
++#endif
+ 
+     // disable auto allocation of workspace to use allocator from the framework
+     PADDLE_ENFORCE_GPU_SUCCESS(
+         phi::dynload::cufftSetAutoAllocation(plan(), /* autoAllocate */ 0));
+ 
++#ifdef PADDLE_WITH_COREX
++    PADDLE_ENFORCE_GPU_SUCCESS(
++        phi::dynload::cufftMakePlanMany(plan(),
++                                        signal_ndim,
++                                        signal_sizes.data(),
++                                        /* inembed */ nullptr,
++                                        /* base_istride */ 1,
++                                        /* idist */ 1,
++                                        /* onembed */ nullptr,
++                                        /* base_ostride */ 1,
++                                        /* odist */ 1,
++                                        exec_type,
++                                        batch_size,
++                                        &ws_size_));
++#else
+     PADDLE_ENFORCE_GPU_SUCCESS(
+         phi::dynload::cufftXtMakePlanMany(plan(),
+                                           signal_ndim,
+@@ -125,6 +165,7 @@ class FFTConfig {
+                                           batch_size,
+                                           &ws_size_,
+                                           exec_type));
++#endif
+   }
+ 
+   FFTConfig(const FFTConfig& other) = delete;
+@@ -145,6 +186,44 @@ class FFTConfig {
+   DataType precision_;
+ };
+ 
++#ifdef PADDLE_WITH_COREX
++static void exec_plan(const FFTConfig& config,
++                      void* in_data,
++                      void* out_data,
++                      bool forward) {
++  auto& plan = config.plan();
++
++  auto value_type = config.data_type();
++  if (value_type == DataType::FLOAT32) {
++    switch (config.transform_type()) {
++      case FFTTransformType::C2C: {
++        PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cufftExecC2C(
++            plan,
++            static_cast<cufftComplex*>(in_data),
++            static_cast<cufftComplex*>(out_data),
++            forward ? CUFFT_FORWARD : CUFFT_INVERSE));
++        return;
++      }
++      case FFTTransformType::R2C: {
++        PADDLE_ENFORCE_GPU_SUCCESS(
++            phi::dynload::cufftExecR2C(plan,
++                                       static_cast<cufftReal*>(in_data),
++                                       static_cast<cufftComplex*>(out_data)));
++        return;
++      }
++      case FFTTransformType::C2R: {
++        PADDLE_ENFORCE_GPU_SUCCESS(
++            phi::dynload::cufftExecC2R(plan,
++                                       static_cast<cufftComplex*>(in_data),
++                                       static_cast<cufftReal*>(out_data)));
++        return;
++      }
++    }
++  }
++  PADDLE_THROW(phi::errors::InvalidArgument(
++      "ixFFT only support transforms of type float32"));
++}
++#else
+ // NOTE: R2C is forward-only, C2R is backward only
+ static void exec_plan(const FFTConfig& config,
+                       void* in_data,
+@@ -154,6 +233,7 @@ static void exec_plan(const FFTConfig& config,
+   PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cufftXtExec(
+       plan, in_data, out_data, forward ? CUFFT_FORWARD : CUFFT_INVERSE));
+ }
++#endif
+ 
+ }  // namespace detail
+ }  // namespace funcs
+diff --git a/paddle/phi/kernels/funcs/layer_norm_impl.cu.h b/paddle/phi/kernels/funcs/layer_norm_impl.cu.h
+index 93540f1df6..b47eab3b9d 100644
+--- a/paddle/phi/kernels/funcs/layer_norm_impl.cu.h
++++ b/paddle/phi/kernels/funcs/layer_norm_impl.cu.h
+@@ -37,11 +37,7 @@ using LayerNormParamType = typename CudnnDataType<T>::BatchNormParamType;
+ 
+ inline static int GetDesiredBlockDim(int64_t block_dim) {
+   const int kMaxBlockDim = 512;
+-#ifdef __HIPCC__
+   const int lwarpSize = 64;
+-#else
+-  const int lwarpSize = 32;
+-#endif
+   return block_dim >= kMaxBlockDim ? kMaxBlockDim : lwarpSize;
+ }
+ 
+diff --git a/paddle/phi/kernels/funcs/reduce_function.h b/paddle/phi/kernels/funcs/reduce_function.h
+index a93425183b..b02fe696cb 100644
+--- a/paddle/phi/kernels/funcs/reduce_function.h
++++ b/paddle/phi/kernels/funcs/reduce_function.h
+@@ -1129,7 +1129,7 @@ void ReduceKernel(const KPDevice& dev_ctx,
+       config.reduce_num == numel && !kIsTxFP16 && !kIsTxBF16 &&
+       config.reduce_num <= std::numeric_limits<int32_t>::max();
+ 
+-#ifndef PADDLE_WITH_XPU_KP
++#if !defined(PADDLE_WITH_XPU_KP) && !defined(PADDLE_WITH_COREX)
+   if (use_cub_reduce) {
+     CubTensorReduce<Tx, Ty, ReduceOp, TransformOp, IsMean>::apply(
+         x_data, y_data, transform, config.reduce_num, dev_ctx, stream);
+diff --git a/paddle/phi/kernels/funcs/reduce_gpu_kernel.h b/paddle/phi/kernels/funcs/reduce_gpu_kernel.h
+index 75862df1b3..7626b26ce2 100644
+--- a/paddle/phi/kernels/funcs/reduce_gpu_kernel.h
++++ b/paddle/phi/kernels/funcs/reduce_gpu_kernel.h
+@@ -41,6 +41,8 @@
+ 
+ #ifdef PADDLE_WITH_HIP
+ #define WARP_SIZE 64
++#elif defined(PADDLE_WITH_COREX)
++#define WARP_SIZE 64
+ #else
+ #define WARP_SIZE 32
+ #endif
+@@ -1225,7 +1227,7 @@ template <typename Tx,
+           int kVecSize = 4,
+           int kInputVecSize = kVecSize,
+           typename ReduceOp,
+-          typename ident_t = double>
++          typename ident_t = float>
+ inline void GPUReduceScheduler(const KPDevice& dev_ctx,
+                                const DenseTensorIterator& iter,
+                                const ReduceOp& reducer,
+@@ -1387,29 +1389,29 @@ void ReduceGpuKernel(const KPDevice& dev_ctx,
+   }();
+ 
+   // Initialize ident value.
+-  Tx ident = []() {
++  MPType ident = []() {
+     if constexpr (std::is_same_v<ReduceOp<Tx, MPType, Ty>,
+                                  kps::MaxOps<Tx, MPType, Ty>>) {
+-      return std::numeric_limits<Tx>::lowest();
++      return std::numeric_limits<MPType>::lowest();
+     }
+ 
+     if constexpr (std::is_same_v<ReduceOp<Tx, MPType, Ty>,
+                                  kps::MinOps<Tx, MPType, Ty>>) {
+-      return std::numeric_limits<Tx>::max();
++      return std::numeric_limits<MPType>::max();
+     }
+ 
+     if constexpr (std::is_same_v<ReduceOp<Tx, MPType, Ty>,
+                                  kps::LogicalAndOps<Tx, MPType, Ty>>) {
+-      return Tx{1};
++      return MPType{1};
+     }
+ 
+     if constexpr (std::is_same_v<ReduceOp<Tx, MPType, Ty>,
+                                  kps::ProdOps<Tx, MPType, Ty>>) {
+-      return Tx{1};
++      return MPType{1};
+     }
+ 
+     // SumOps, MeanOps, LogicalOrOps and others
+-    return Tx{0};
++    return MPType{0};
+   }();
+ 
+   GPUReduceScheduler<Tx, Ty, kVecSize, kInputVecSize, ReduceOp<Tx, MPType, Ty>>(
+diff --git a/paddle/phi/kernels/funcs/segmented_array.h b/paddle/phi/kernels/funcs/segmented_array.h
+index dad852093e..71adfaf3ed 100644
+--- a/paddle/phi/kernels/funcs/segmented_array.h
++++ b/paddle/phi/kernels/funcs/segmented_array.h
+@@ -118,6 +118,13 @@ struct ArraySetterBase {
+         phi::Stream(reinterpret_cast<phi::StreamId>(dev_ctx.stream())));
+ 
+     int8_t* restored = reinterpret_cast<int8_t*>(src);
++#ifdef PADDLE_WITH_COREX
++    PADDLE_ENFORCE_GPU_SUCCESS(cudaMemcpyAsync(allocation->ptr(),
++                                               restored,
++                                               num_bytes,
++                                               phi::gpuMemcpyHostToDevice,
++                                               dev_ctx.stream()));
++#else
+ #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+     if (use_cuda_graph) {
+       restored = phi::backends::gpu::RestoreHostMemIfCapturingCUDAGraph<int8_t>(
+@@ -129,6 +136,7 @@ struct ArraySetterBase {
+                                        num_bytes,
+                                        phi::gpuMemcpyHostToDevice,
+                                        dev_ctx.stream());
++#endif
+ 
+     auto ptr = allocation->ptr();
+     allocations.emplace_back(std::move(allocation));
+diff --git a/paddle/phi/kernels/funcs/softmax_impl.h b/paddle/phi/kernels/funcs/softmax_impl.h
+index 482a418ad9..78a446ca6f 100644
+--- a/paddle/phi/kernels/funcs/softmax_impl.h
++++ b/paddle/phi/kernels/funcs/softmax_impl.h
+@@ -21,6 +21,7 @@ limitations under the License. */
+ #include "paddle/phi/core/dense_tensor.h"
+ #include "paddle/phi/kernels/funcs/cpu_vec.h"
+ #include "paddle/phi/kernels/funcs/eigen/common.h"
++#include "paddle/phi/kernels/funcs/softmax.h"
+ 
+ namespace phi {
+ namespace funcs {
+diff --git a/paddle/phi/kernels/fusion/gpu/fused_layernorm_kernel.cu b/paddle/phi/kernels/fusion/gpu/fused_layernorm_kernel.cu
+index 4608f871f2..1d54e0d291 100644
+--- a/paddle/phi/kernels/fusion/gpu/fused_layernorm_kernel.cu
++++ b/paddle/phi/kernels/fusion/gpu/fused_layernorm_kernel.cu
+@@ -58,11 +58,7 @@ namespace fusion {
+ 
+ namespace {
+ 
+-#ifdef PADDLE_WITH_HIP
+ constexpr int kWarpSize = 64;
+-#else
+-constexpr int kWarpSize = 32;
+-#endif
+ 
+ template <typename T>
+ struct SumOp {
+diff --git a/paddle/phi/kernels/fusion/gpu/fused_layernorm_residual_dropout_bias.h b/paddle/phi/kernels/fusion/gpu/fused_layernorm_residual_dropout_bias.h
+index 25c9fa597e..bb531b681f 100644
+--- a/paddle/phi/kernels/fusion/gpu/fused_layernorm_residual_dropout_bias.h
++++ b/paddle/phi/kernels/fusion/gpu/fused_layernorm_residual_dropout_bias.h
+@@ -24,11 +24,7 @@ namespace fusion {
+ 
+ #define LN_NUM_COLS 1024
+ 
+-#ifdef PADDLE_WITH_HIP
+ #define WARPSIZE 64
+-#else
+-#define WARPSIZE 32
+-#endif
+ 
+ template <typename T>
+ using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+@@ -154,13 +150,8 @@ __global__ void FusedLayernormResidualDropoutBias(
+ 
+   __shared__ U mean_share;
+   __shared__ U var_share;
+-#ifdef PADDLE_WITH_HIP
+   __shared__ U shared_mean[64];
+   __shared__ U shared_var[64];
+-#else
+-  __shared__ U shared_mean[32];
+-  __shared__ U shared_var[32];
+-#endif
+ 
+   funcs::ReluFunctor<T> relu;
+   U mean_val = 0;
+@@ -352,13 +343,8 @@ __global__ void FusedLayernormResidualDropoutBiasInfer(
+ 
+   __shared__ U mean_share;
+   __shared__ U var_share;
+-#ifdef PADDLE_WITH_HIP
+   __shared__ U shared_mean[64];
+   __shared__ U shared_var[64];
+-#else
+-  __shared__ U shared_mean[32];
+-  __shared__ U shared_var[32];
+-#endif
+ 
+   funcs::ReluFunctor<T> relu;
+   U mean_val = 0;
+@@ -638,9 +624,6 @@ __global__ __launch_bounds__(THREADS_PER_CTA) void fused_fast_ln_fwd_kernel(
+         RandVec<VecSize>(&state, rand);
+ #pragma unroll
+         for (int jt = 0; jt < VecSize; jt++) {
+-#ifndef PADDLE_WITH_HIP
+-#pragma unroll
+-#endif
+           mask_vec[it][jt] = static_cast<MaskType>(rand[jt] >= dropout_prob);
+         }
+       }
+diff --git a/paddle/phi/kernels/gpu/batch_norm_grad_kernel.cu b/paddle/phi/kernels/gpu/batch_norm_grad_kernel.cu
+index 047e603b66..a0438aa652 100644
+--- a/paddle/phi/kernels/gpu/batch_norm_grad_kernel.cu
++++ b/paddle/phi/kernels/gpu/batch_norm_grad_kernel.cu
+@@ -712,7 +712,7 @@ void BatchNormGradFunctor(const Context &dev_ctx,
+                  << "CUDNN_BN_MIN_EPSILON. Setting it to "
+                  << "CUDNN_BN_MIN_EPSILON instead.";
+     }
+-    epsilon = std::max(epsilon, CUDNN_BN_MIN_EPSILON);
++    epsilon = std::max(epsilon, static_cast<double>(CUDNN_BN_MIN_EPSILON));
+ #ifdef PADDLE_WITH_HIP
+     // TODO(wangran16): wait for MIOpen to improve the performance of BN
+     if (H == 1 && W == 1) {
+diff --git a/paddle/phi/kernels/gpu/batch_norm_kernel.cu b/paddle/phi/kernels/gpu/batch_norm_kernel.cu
+index 7a452d401e..36d1e25b2a 100644
+--- a/paddle/phi/kernels/gpu/batch_norm_kernel.cu
++++ b/paddle/phi/kernels/gpu/batch_norm_kernel.cu
+@@ -46,6 +46,10 @@ using CudnnDataType = phi::backends::gpu::CudnnDataType<T>;
+ template <typename T>
+ using BatchNormParamType = typename CudnnDataType<T>::BatchNormParamType;
+ 
++#ifdef PADDLE_WITH_COREX
++#define double float
++#endif
++
+ template <typename T, DataLayout layout>
+ static __global__ void BNForwardInference(const T *x,
+                                           const BatchNormParamType<T> *mean,
+@@ -535,6 +539,9 @@ static __global__ void BNForwardTraining2DWriteRes(
+     }
+   }
+ }
++#ifdef PADDLE_WITH_COREX
++#undef double
++#endif
+ 
+ template <typename T, typename Context>
+ void BatchNormKernel(const Context &dev_ctx,
+@@ -669,7 +676,7 @@ void BatchNormKernel(const Context &dev_ctx,
+                << "CUDNN_BN_MIN_EPSILON. Setting it to "
+                << "CUDNN_BN_MIN_EPSILON instead.";
+   }
+-  epsilon = std::max(epsilon, CUDNN_BN_MIN_EPSILON);
++  epsilon = std::max(epsilon, static_cast<double>(CUDNN_BN_MIN_EPSILON));
+ 
+ #ifdef PADDLE_WITH_HIP
+   // TODO(wangran16): wait for MIOpen to improve the performance of BN
+@@ -1052,7 +1059,7 @@ void BatchNormKernel(const Context &dev_ctx,
+         dim3 grid;
+         const int block_size = 512;
+         const int MAX_GRID_SIZE = 128;
+-        const int WARP_SIZE = 32;
++        const int WARP_SIZE = 64;
+ 
+         // init intermediate storage
+         DenseTensor block_data_tensor;
+diff --git a/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu b/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu
+index 85615d0dd3..a48ac51308 100644
+--- a/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu
++++ b/paddle/phi/kernels/gpu/cross_entropy_grad_kernel.cu
+@@ -147,7 +147,7 @@ void CrossEntropyWithSoftmaxGradGPUKernel(const GPUContext& dev_ctx,
+                                           DenseTensor* logits_grad) {
+   PADDLE_ENFORCE_EQ(
+       dev_ctx.GetPlace().GetType(),
+-      AllocationType::GPU,
++      AllocationType::CUSTOM,
+       common::errors::Unavailable("softmax_with_cross_entropy operator's "
+                                   "CUDA kernel only runs on GPU device."));
+   const T* loss_grad_data = loss_grad.data<T>();
+diff --git a/paddle/phi/kernels/gpu/cross_entropy_kernel.cu b/paddle/phi/kernels/gpu/cross_entropy_kernel.cu
+index 9d382a8763..bb9512af53 100644
+--- a/paddle/phi/kernels/gpu/cross_entropy_kernel.cu
++++ b/paddle/phi/kernels/gpu/cross_entropy_kernel.cu
+@@ -84,7 +84,7 @@ __global__ void CrossEntropySoftLabel(T* loss,
+ 
+   const int kThreadPerBlock = 512;
+   const int kBatchPerBlock = 1;
+-  const int kWarpSize = 32;  // (dim < 32) ? dim : 32;
++  const int kWarpSize = 64;  // (dim < 32) ? dim : 32;
+   const int kBatchSize = 1;
+   const int kThreadPerBatch = kThreadPerBlock / kBatchPerBlock;
+   const int kWarpPerBatch = kThreadPerBatch / kWarpSize;
+@@ -543,7 +543,7 @@ __global__ void WarpSoftmaxForwardSoftLabel(T* loss,
+   const bool LogMode = true;
+ 
+   constexpr int kDimCeil = 1 << Log2Elements;
+-  constexpr int kWarpSize = (kDimCeil < 32) ? kDimCeil : 32;
++  constexpr int kWarpSize = (kDimCeil < 64) ? kDimCeil : 64;
+   constexpr int kVSize = sizeof(VecT) / sizeof(T);
+   constexpr int kIterations = kDimCeil / kWarpSize;
+   constexpr int kIterationsV =
+@@ -743,7 +743,7 @@ static void SoftmaxWithCrossEntropySoftLabel(const GPUContext& dev_ctx,
+   auto stream = dev_ctx.stream();
+ 
+   if (D == 1 && dim <= max_dim) {
+-    int kWarpSize = (kDimCeil < 32) ? kDimCeil : 32;
++    int kWarpSize = (kDimCeil < 64) ? kDimCeil : 64;
+     int batches_per_warp = (kDimCeil <= 128) ? 2 : 1;
+ 
+     // use 128 threads per block to maximize gpu utilization
+@@ -841,7 +841,7 @@ __global__ void WarpSoftmaxForward(T* loss,
+                                    const int element_count,
+                                    const int ignore_index) {
+   constexpr int kDimCeil = 1 << Log2Elements;
+-  constexpr int kWarpSize = (kDimCeil < 32) ? kDimCeil : 32;
++  constexpr int kWarpSize = (kDimCeil < 64) ? kDimCeil : 64;
+   constexpr int kVSize = sizeof(VecT) / sizeof(T);
+   constexpr int kIterations = kDimCeil / kWarpSize;
+   constexpr int kIterationsV =
+@@ -1089,7 +1089,7 @@ void SwitchWarpSoftmaxForward(T* loss,
+   // use 128 threads per block to maximimize gpu utilization
+   const int log2_elements = static_cast<int>(Log2Ceil(element_count));
+   const int kDimCeil = 1 << log2_elements;
+-  int kWarpSize = (kDimCeil < 32) ? kDimCeil : 32;
++  int kWarpSize = (kDimCeil < 64) ? kDimCeil : 64;
+   int batches_per_warp = (kDimCeil <= 128) ? 2 : 1;
+   constexpr int threads_per_block = 128;
+   int warps_per_block = (threads_per_block / kWarpSize);
+diff --git a/paddle/phi/kernels/gpu/elementwise_grad.h b/paddle/phi/kernels/gpu/elementwise_grad.h
+index 2d9a3493a6..460be448db 100644
+--- a/paddle/phi/kernels/gpu/elementwise_grad.h
++++ b/paddle/phi/kernels/gpu/elementwise_grad.h
+@@ -352,7 +352,11 @@ void ElementwiseAddGrad(const GPUContext &dev_ctx,
+     Copy(dev_ctx, dout, dev_ctx.GetPlace(), false, dx);
+   } else if (dx_data != dout_data && dy_data != dout_data) {
+     auto size = x.numel();
++#ifdef PADDLE_WITH_COREX
++    int vec_size = std::max(static_cast<int>(sizeof(float4) / sizeof(T)), 1);
++#else
+     int vec_size = max(static_cast<int>(sizeof(float4) / sizeof(T)), 1);
++#endif
+     dim3 block_size = dim3(PREDEFINED_BLOCK_SIZE, 1);
+     dim3 grid_size =
+         dim3(((size + vec_size - 1) / vec_size + PREDEFINED_BLOCK_SIZE - 1) /
+diff --git a/paddle/phi/kernels/gpu/fused_rms_norm_quant_grad_kernel.cu b/paddle/phi/kernels/gpu/fused_rms_norm_quant_grad_kernel.cu
+index 2356d31d9d..99573ecae6 100644
+--- a/paddle/phi/kernels/gpu/fused_rms_norm_quant_grad_kernel.cu
++++ b/paddle/phi/kernels/gpu/fused_rms_norm_quant_grad_kernel.cu
+@@ -207,7 +207,7 @@ PD_REGISTER_KERNEL(fused_rms_norm_quant_grad,
+                    float,
+                    phi::float16) {}
+ 
+-#elif CUDNN_VERSION_MIN(8, 1, 0)
++#elif defined(PADDLE_WITH_COREX)
+ 
+ PD_REGISTER_KERNEL(fused_rms_norm_quant_grad,
+                    GPU,
+diff --git a/paddle/phi/kernels/gpu/instance_norm_grad_kernel.cu b/paddle/phi/kernels/gpu/instance_norm_grad_kernel.cu
+index 6b6674d6c0..25dda074bc 100644
+--- a/paddle/phi/kernels/gpu/instance_norm_grad_kernel.cu
++++ b/paddle/phi/kernels/gpu/instance_norm_grad_kernel.cu
+@@ -425,7 +425,7 @@ void InstanceNormGradKernel(const Context &dev_ctx,
+                << "CUDNN_BN_MIN_EPSILON. Setting it to "
+                << "CUDNN_BN_MIN_EPSILON instead.";
+   }
+-  epsilon = std::max(epsilon, CUDNN_BN_MIN_EPSILON);
++  epsilon = std::max(epsilon, static_cast<double>(CUDNN_BN_MIN_EPSILON));
+ 
+ #ifdef PADDLE_WITH_HIP
+   PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::miopenSetTensorDescriptor(
+diff --git a/paddle/phi/kernels/gpu/instance_norm_kernel.cu b/paddle/phi/kernels/gpu/instance_norm_kernel.cu
+index 92e99e1145..fcd0a42f94 100644
+--- a/paddle/phi/kernels/gpu/instance_norm_kernel.cu
++++ b/paddle/phi/kernels/gpu/instance_norm_kernel.cu
+@@ -97,7 +97,7 @@ void InstanceNormKernel(const Context &dev_ctx,
+                << "CUDNN_BN_MIN_EPSILON. Setting it to "
+                << "CUDNN_BN_MIN_EPSILON instead.";
+   }
+-  epsilon = std::max(epsilon, CUDNN_BN_MIN_EPSILON);
++  epsilon = std::max(epsilon, static_cast<double>(CUDNN_BN_MIN_EPSILON));
+ 
+   VLOG(3) << "Setting descriptors.";
+   std::vector<int> dims;
+diff --git a/paddle/phi/kernels/gpu/interpolate_grad_kernel.cu b/paddle/phi/kernels/gpu/interpolate_grad_kernel.cu
+index ecd0ec00c1..e4b2a2197b 100644
+--- a/paddle/phi/kernels/gpu/interpolate_grad_kernel.cu
++++ b/paddle/phi/kernels/gpu/interpolate_grad_kernel.cu
+@@ -300,16 +300,16 @@ __global__ void KeBilinearInterpBwShareMemory(T* in,
+         &in_img_idy, &h_id, &h1lambda, &h2lambda, src_h, in_h);
+ 
+     // top_left_index is just input_index.
+-    int64_t input_index = out_id_h * in_chw + channel_id * in_img_size +
++    int32_t input_index = out_id_h * in_chw + channel_id * in_img_size +
+                           in_img_idy * in_w + in_img_idx;
+-    int64_t top_right_index = input_index + w_id;
+-    int64_t bot_left_index = input_index + h_id * in_w;
+-    int64_t bot_right_index = input_index + h_id * in_w + w_id;
+-    int64_t in_top_min_index, in_bot_min_index;
++    int32_t top_right_index = input_index + w_id;
++    int32_t bot_left_index = input_index + h_id * in_w;
++    int32_t bot_right_index = input_index + h_id * in_w + w_id;
++    int32_t in_top_min_index, in_bot_min_index;
+ 
+     s_data[0][threadIdx.x] = static_cast<MT>(0);
+     s_data[1][threadIdx.x] = static_cast<MT>(0);
+-    int64_t remain = nthreads - (tid & (-static_cast<int64_t>(blockDim.x)));
++    int64_t remain = nthreads - (tid & (-blockDim.x));
+     int64_t in_top_max_index =
+         funcs::BlockReduceMax(top_right_index, FINAL_MASK);
+     int64_t in_bot_max_index =
+diff --git a/paddle/phi/kernels/gpu/layer_norm_grad_kernel.cu b/paddle/phi/kernels/gpu/layer_norm_grad_kernel.cu
+index e0e13b9333..ac68bc20a1 100644
+--- a/paddle/phi/kernels/gpu/layer_norm_grad_kernel.cu
++++ b/paddle/phi/kernels/gpu/layer_norm_grad_kernel.cu
+@@ -225,7 +225,7 @@ PD_REGISTER_KERNEL(layer_norm_grad,
+     kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);
+   }
+ }
+-#elif CUDNN_VERSION_MIN(8, 1, 0)
++#elif CUDNN_VERSION_MIN(8, 1, 0) || defined(PADDLE_WITH_COREX)
+ PD_REGISTER_KERNEL(layer_norm_grad,
+                    GPU,
+                    ALL_LAYOUT,
+diff --git a/paddle/phi/kernels/gpu/layer_norm_kernel.cu b/paddle/phi/kernels/gpu/layer_norm_kernel.cu
+index eb48fc1dff..c9b5cb296d 100644
+--- a/paddle/phi/kernels/gpu/layer_norm_kernel.cu
++++ b/paddle/phi/kernels/gpu/layer_norm_kernel.cu
+@@ -765,7 +765,7 @@ PD_REGISTER_KERNEL(
+   kernel->OutputAt(1).SetDataType(phi::DataType::UNDEFINED);
+   kernel->OutputAt(2).SetDataType(phi::DataType::UNDEFINED);
+ }
+-#elif CUDNN_VERSION_MIN(8, 1, 0)
++#elif CUDNN_VERSION_MIN(8, 1, 0) || defined(PADDLE_WITH_COREX)
+ PD_REGISTER_KERNEL(layer_norm,
+                    GPU,
+                    ALL_LAYOUT,
+diff --git a/paddle/phi/kernels/gpudnn/conv_cudnn_v7.h b/paddle/phi/kernels/gpudnn/conv_cudnn_v7.h
+index 085845dfb3..defe09ec84 100644
+--- a/paddle/phi/kernels/gpudnn/conv_cudnn_v7.h
++++ b/paddle/phi/kernels/gpudnn/conv_cudnn_v7.h
+@@ -152,15 +152,29 @@ struct SearchAlgorithmBase<ConvKind::kForward> {
+     result.workspace_size = perf_results[best_algo_idx].memory;
+ 
+     if (result.workspace_size > workspace_size_limit) {
+-      VLOG(4) << GetPerfResultString<PerfT>("[Heuristic] FwdAlgo Perf result",
+-                                            perf_results,
+-                                            actual_perf_count,
+-                                            workspace_size_limit);
+-      // cudnnGetConvolutionForwardAlgorithm is removed in CUDNN-8
+-      ChooseAlgoByWorkspace<PerfT, AlgoT>(
+-          perf_results, workspace_size_limit, &result);
+-    }
+-
++    //   VLOG(4) << GetPerfResultString<PerfT>("[Heuristic] FwdAlgo Perf result",
++    //                                         perf_results,
++    //                                         actual_perf_count,
++    //                                         workspace_size_limit);
++    //   // cudnnGetConvolutionForwardAlgorithm is removed in CUDNN-8
++    //   ChooseAlgoByWorkspace<PerfT, AlgoT>(
++    //       perf_results, workspace_size_limit, &result);
++    // }
++      VLOG(3) << "Fallback to non-v7 method to find conv algorithm "
++                 "because the workspace size request("
++              << result.workspace_size << ") exceeds the limit("
++              << workspace_size_limit << ")";
++      PADDLE_ENFORCE_GPU_SUCCESS(
++          phi::dynload::cudnnGetConvolutionForwardAlgorithm(
++              args.handle,
++              args.idesc.desc(),
++              args.wdesc.desc(),
++              args.cdesc.desc(),
++              args.odesc.desc(),
++              CUDNN_CONVOLUTION_FWD_SPECIFY_WORKSPACE_LIMIT,
++              workspace_size_limit,
++              &(result.algo)));
++          }
+     result.workspace_size = GetWorkspaceSize(args, result.algo);
+     return result;
+   }
+@@ -299,10 +313,25 @@ struct SearchAlgorithmBase<ConvKind::kBackwardData> {
+ 
+     result.workspace_size = GetWorkspaceSize(args, result.algo);
+     if (result.workspace_size > workspace_size_limit) {
+-      // cudnnGetConvolutionBackwardDataAlgorithm is removed in CUDNN-8
+-      ChooseAlgoByWorkspace<PerfT, AlgoT>(
+-          perf_results, workspace_size_limit, &result);
+-    }
++    //   // cudnnGetConvolutionBackwardDataAlgorithm is removed in CUDNN-8
++    //   ChooseAlgoByWorkspace<PerfT, AlgoT>(
++    //       perf_results, workspace_size_limit, &result);
++    // }
++          VLOG(1) << "Fallback to non-v7 method to find conv algorithm because "
++                 "the workspace size request("
++              << result.workspace_size << ") exceeds the limit("
++              << workspace_size_limit << ")";
++      PADDLE_ENFORCE_GPU_SUCCESS(
++          phi::dynload::cudnnGetConvolutionBackwardDataAlgorithm(
++              args.handle,
++              args.wdesc.desc(),
++              args.odesc.desc(),
++              args.cdesc.desc(),
++              args.idesc.desc(),
++              CUDNN_CONVOLUTION_BWD_DATA_SPECIFY_WORKSPACE_LIMIT,
++              workspace_size_limit,
++              &(result.algo)));
++          }
+     result.workspace_size = GetWorkspaceSize(args, result.algo);
+     return result;
+   }
+@@ -442,9 +471,24 @@ struct SearchAlgorithmBase<ConvKind::kBackwardFilter> {
+ 
+     if (result.workspace_size > workspace_size_limit) {
+       // cudnnGetConvolutionBackwardFilterAlgorithm is removed in CUDNN-8
+-      ChooseAlgoByWorkspace<PerfT, AlgoT>(
+-          perf_results, workspace_size_limit, &result);
+-    }
++    //   ChooseAlgoByWorkspace<PerfT, AlgoT>(
++    //       perf_results, workspace_size_limit, &result);
++    // }
++    VLOG(1) << "Fallback to non-v7 method to find conv algorithm because "
++                 "the workspace size request("
++              << result.workspace_size << ") exceeds the limit("
++              << workspace_size_limit << ")";
++      PADDLE_ENFORCE_GPU_SUCCESS(
++          phi::dynload::cudnnGetConvolutionBackwardFilterAlgorithm(
++              args.handle,
++              args.idesc.desc(),
++              args.odesc.desc(),
++              args.cdesc.desc(),
++              args.wdesc.desc(),
++              CUDNN_CONVOLUTION_BWD_FILTER_SPECIFY_WORKSPACE_LIMIT,
++              workspace_size_limit,
++              &(result.algo)));
++          }
+ 
+     result.workspace_size = GetWorkspaceSize(args, result.algo);
+     return result;
+@@ -647,7 +691,7 @@ struct SearchAlgorithm : public SearchAlgorithmBase<CK> {
+     } else if (dtype == CUDNN_DATA_FLOAT && !cdesc.allow_tf32_) {
+       VLOG(5) << "Disable TensorFloat (Tensor Core) for FLOAT";
+       PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetConvolutionMathType(
+-          cdesc.desc(), CUDNN_FMA_MATH));
++          cdesc.desc(), CUDNN_DEFAULT_MATH));
+     } else {
+       PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetConvolutionMathType(
+           cdesc.desc(), CUDNN_DEFAULT_MATH));
+diff --git a/paddle/phi/kernels/gpudnn/softmax_gpudnn.h b/paddle/phi/kernels/gpudnn/softmax_gpudnn.h
+index be6ee4f854..87ad910d79 100644
+--- a/paddle/phi/kernels/gpudnn/softmax_gpudnn.h
++++ b/paddle/phi/kernels/gpudnn/softmax_gpudnn.h
+@@ -29,6 +29,9 @@ limitations under the License. */
+ #define SOFTMAX_ALIGN_BYTES 16
+ #define MATRIX_SOFTMAX_ALIGN_BYTES 16
+ #define MATRIX_SOFTMAX_THRESHOLD 100000
++#ifdef PADDLE_WITH_COREX
++#define MAX_YZ_DIM_SIZE 65535
++#endif
+ 
+ COMMON_DECLARE_bool(use_accuracy_compatible_kernel);
+ 
+@@ -100,7 +103,7 @@ inline int CalcBlockSize(int vec_size, uint64_t dim_size) {
+   }
+ 
+   while (block_size < (max_block_size)) block_size *= 2;
+-  block_size = std::max(block_size, static_cast<uint64_t>(32));
++  block_size = std::max(block_size, static_cast<uint64_t>(64));
+   return block_size;
+ }
+ 
+@@ -132,37 +135,37 @@ __device__ __forceinline__ void WarpReduceMax(T* sum) {
+ 
+ template <typename T>
+ __inline__ __device__ void BlockReduceMax(T* val) {
+-  static __shared__ T shared[32];
+-  int lane = threadIdx.x & 0x1f;
+-  int wid = threadIdx.x >> 5;
++  static __shared__ T shared[64];
++  int lane = threadIdx.x & 0x3f;
++  int wid = threadIdx.x >> 6;
+ 
+-  WarpReduceMax<T, 1, 32>(val);
++  WarpReduceMax<T, 1, 64>(val);
+ 
+   if (lane == 0) shared[wid] = *val;
+ 
+   __syncthreads();
+ 
+-  int block_span = (blockDim.x + warpSize - 1) >> 5;
+-  *val = (lane < block_span) ? shared[lane] : -1e10f;
+-  WarpReduceMax<T, 1, 32>(val);
++  int block_span = (blockDim.x + warpSize - 1) >> 6;
++  *val = (lane < block_span) ? shared[lane] : std::numeric_limits<T>::lowest();
++  WarpReduceMax<T, 1, 64>(val);
+ }
+ 
+ template <typename T>
+ __inline__ __device__ void BlockReduceSum(T* val) {
+-  static __shared__ T shared[32];
+-  int lane = threadIdx.x & 0x1f;
+-  int wid = threadIdx.x >> 5;
++  static __shared__ T shared[64];
++  int lane = threadIdx.x & 0x3f;
++  int wid = threadIdx.x >> 6;
+ 
+-  WarpReduceSum<T, 1, 32>(val);
++  WarpReduceSum<T, 1, 64>(val);
+ 
+   __syncthreads();
+   if (lane == 0) shared[wid] = *val;
+ 
+   __syncthreads();
+ 
+-  int block_span = (blockDim.x + warpSize - 1) >> 5;
++  int block_span = (blockDim.x + warpSize - 1) >> 6;
+   *val = (lane < block_span) ? shared[lane] : static_cast<T>(0.0f);
+-  WarpReduceSum<T, 1, 32>(val);
++  WarpReduceSum<T, 1, 64>(val);
+ }
+ 
+ template <typename Tx, typename Ty = Tx>
+@@ -531,11 +534,11 @@ __global__ void WarpSoftmaxForward(T* softmax,
+                                    const IndexType stride,
+                                    const IndexType element_count) {
+   constexpr IndexType kDimCeil = 1 << Log2Elements;
+-  constexpr IndexType kWarpSize = (kDimCeil < 32) ? kDimCeil : 32;
++  constexpr IndexType kWarpSize = (kDimCeil < 64) ? kDimCeil : 64;
+   constexpr IndexType kVSize = sizeof(VecT) / sizeof(T);
+   constexpr IndexType kLoops = kDimCeil / kWarpSize;
+   constexpr IndexType kLoopsV = (kLoops >= kVSize) ? (kLoops / kVSize) : 1;
+-  constexpr IndexType kBatchSize = (kDimCeil <= 32) ? 2 : 1;
++  constexpr IndexType kBatchSize = (kDimCeil <= 64) ? 2 : 1;
+   IndexType first_batch =
+       (static_cast<IndexType>(blockDim.y) * blockIdx.x + threadIdx.y) *
+       kBatchSize;
+@@ -652,9 +655,9 @@ __global__ void WarpSoftmaxBackward(T* dst,
+                                     IndexType element_count) {
+   constexpr IndexType kVSize = sizeof(VecT) / sizeof(T);
+   constexpr IndexType kDimCeil = 1 << Log2Elements;
+-  constexpr IndexType kWarpSize = (kDimCeil < 32) ? kDimCeil : 32;
++  constexpr IndexType kWarpSize = (kDimCeil < 64) ? kDimCeil : 64;
+   constexpr IndexType kLoops = kDimCeil / kWarpSize;
+-  constexpr IndexType kBatchSize = (kDimCeil <= 128) ? 2 : 1;
++  constexpr IndexType kBatchSize = (kDimCeil <= 256) ? 2 : 1;
+   constexpr IndexType kLoopsV = (kLoops >= kVSize) ? (kLoops / kVSize) : 1;
+   IndexType element_count_v = element_count / kVSize;
+   IndexType first_batch =
+@@ -865,6 +868,10 @@ static void GetGridDim(int64_t high_dim,
+   grid_x = std::min(grid_x, max_num_blocks);
+   int64_t grid_y = (max_num_blocks + grid_x - 1) / grid_x;
+   grid_y = std::min(grid_y, high_dim);
++#ifdef PADDLE_WITH_COREX
++  grid_y = std::min(grid_y,
++                    std::max(MAX_YZ_DIM_SIZE / static_cast<int64_t>(block.y), static_cast<int64_t>(1)));
++#endif
+   grid->x = grid_x;
+   grid->y = grid_y;
+ }
+@@ -873,7 +880,7 @@ static void GetBlockDim(int64_t mid_dim, int64_t low_dim, dim3* block) {
+   constexpr int max_num_threads = 1024;
+   int64_t block_x = int64_t(1) << Log2Ceil(low_dim);
+   int64_t block_y = int64_t(1) << Log2Ceil(mid_dim);
+-  block->x = std::min<int64_t>(block_x, 32);
++  block->x = std::min<int64_t>(block_x, 64);
+   block->y = std::min<int64_t>(block_y, max_num_threads / block->x);
+   block->x = std::min<int64_t>(block_x, max_num_threads / block->y);
+ }
+@@ -2663,11 +2670,11 @@ void SoftmaxForwardCUDAKernelDriverImpl(const GPUContext& dev_ctx,
+         D > std::numeric_limits<int32_t>::max()) {
+       int dim_log2 = static_cast<int>(Log2Ceil(dim));
+       IndexType dim_ceil = 1 << dim_log2;
+-      int warp_size = (dim_ceil < 32) ? dim_ceil : 32;
+-      int batches_per_warp = (dim_ceil <= 32) ? 2 : 1;
++      int warp_size = (dim_ceil < 64) ? dim_ceil : 64;
++      int batches_per_warp = (dim_ceil <= 64) ? 2 : 1;
+ 
+       // use 128 threads per block to maximize gpu utilization
+-      constexpr int threads_per_block = 128;
++      constexpr int threads_per_block = 256;
+ 
+       int warps_per_block = (threads_per_block / warp_size);
+       int batches_per_block = warps_per_block * batches_per_warp;
+@@ -2802,10 +2809,10 @@ void SoftmaxBackwardCUDAKernelDriverImpl(const GPUContext& dev_ctx,
+         D > std::numeric_limits<int32_t>::max()) {
+       int dim_log2 = Log2Ceil(dim);
+       IndexType dim_ceil = 1 << dim_log2;
+-      int warp_size = (dim_ceil < 32) ? dim_ceil : 32;
+-      int batches_per_warp = (dim_ceil <= 128) ? 2 : 1;
++      int warp_size = (dim_ceil < 64) ? dim_ceil : 64;
++      int batches_per_warp = (dim_ceil <= 256) ? 2 : 1;
+ 
+-      constexpr int threads_per_block = 128;
++      constexpr int threads_per_block = 256;
+ 
+       int warps_per_block = (threads_per_block / warp_size);
+       int batches_per_block = warps_per_block * batches_per_warp;
+diff --git a/paddle/phi/kernels/gpudnn/softmax_kernel.cu b/paddle/phi/kernels/gpudnn/softmax_kernel.cu
+index 2972c2bd85..0bb78d97b5 100644
+--- a/paddle/phi/kernels/gpudnn/softmax_kernel.cu
++++ b/paddle/phi/kernels/gpudnn/softmax_kernel.cu
+@@ -50,7 +50,7 @@ PD_REGISTER_KERNEL(softmax,
+                    phi::float16,
+                    phi::bfloat16) {}
+ #else
+-#if CUDNN_VERSION_MIN(8, 1, 0)
++#if CUDNN_VERSION_MIN(8, 1, 0) || PADDLE_WITH_COREX
+ PD_REGISTER_KERNEL(softmax,
+                    GPUDNN,
+                    ALL_LAYOUT,
+diff --git a/paddle/phi/kernels/primitive/compute_primitives.h b/paddle/phi/kernels/primitive/compute_primitives.h
+index 11481a8b02..136593297e 100644
+--- a/paddle/phi/kernels/primitive/compute_primitives.h
++++ b/paddle/phi/kernels/primitive/compute_primitives.h
+@@ -33,7 +33,7 @@ constexpr int kReduceMaxThread = 256;
+ constexpr int kWarpSize = 64;
+ #else
+ constexpr int kReduceMaxThread = 128;
+-constexpr int kWarpSize = 32;
++constexpr int kWarpSize = 64;
+ #endif
+ 
+ // kGlobalMode: block reduce, each block gets an output;
+@@ -535,35 +535,35 @@ template <typename InT, typename OutT, class OpFunc>
+ __device__ __forceinline__ void Cumsum(OutT* out,
+                                        const InT* in,
+                                        OpFunc compute) {
+-  constexpr int kSize = SHARED_SIZE_LIMIT * 2 + (SHARED_SIZE_LIMIT * 2) / 32;
++  constexpr int kSize = SHARED_SIZE_LIMIT * 2 + (SHARED_SIZE_LIMIT * 2) / 64;
+   __shared__ InT temp[kSize];
+   int stride_size = blockDim.x;
+   int tidx = threadIdx.x;
+-  temp[tidx + tidx / 32] = in[0];
+-  temp[stride_size + tidx + (stride_size + tidx) / 32] = in[1];
++  temp[tidx + tidx / 64] = in[0];
++  temp[stride_size + tidx + (stride_size + tidx) / 64] = in[1];
+   for (int stride = 1; stride <= stride_size; stride *= 2) {
+     __syncthreads();
+     int index = (tidx + 1) * 2 * stride - 1;
+     if (index < (blockDim.x * 2)) {
+-      temp[index + index / 32] =
+-          compute(temp[index + index / 32],
+-                  temp[index - stride + (index - stride) / 32]);
++      temp[index + index / 64] =
++          compute(temp[index + index / 64],
++                  temp[index - stride + (index - stride) / 64]);
+     }
+   }
+   for (int stride = (blockDim.x * 2) / 4; stride > 0; stride /= 2) {
+     __syncthreads();
+     int index = (tidx + 1) * 2 * stride - 1;
+     if ((index + stride) < (blockDim.x * 2)) {
+-      temp[index + stride + (stride + index) / 32] =
+-          compute(temp[index + stride + (stride + index) / 32],
+-                  temp[index + (index) / 32]);
++      temp[index + stride + (stride + index) / 64] =
++          compute(temp[index + stride + (stride + index) / 64],
++                  temp[index + (index) / 64]);
+     }
+   }
+ 
+   __syncthreads();
+-  out[0] = static_cast<OutT>(temp[tidx + tidx / 32]);
++  out[0] = static_cast<OutT>(temp[tidx + tidx / 64]);
+   out[1] =
+-      static_cast<OutT>(temp[tidx + stride_size + (tidx + stride_size) / 32]);
++      static_cast<OutT>(temp[tidx + stride_size + (tidx + stride_size) / 64]);
+ }
+ #undef SHARED_SIZE_LIMIT
+ 
+diff --git a/paddle/phi/kernels/reduce_sum_kernel.cc b/paddle/phi/kernels/reduce_sum_kernel.cc
+index a80da4281a..249a1e1095 100644
+--- a/paddle/phi/kernels/reduce_sum_kernel.cc
++++ b/paddle/phi/kernels/reduce_sum_kernel.cc
+@@ -34,6 +34,7 @@ void SumKernel(const Context& dev_ctx,
+ 
+ }  // namespace phi
+ 
++#ifndef PADDLE_WITH_COREX
+ PD_REGISTER_KERNEL(sum,
+                    CPU,
+                    ALL_LAYOUT,
+@@ -52,6 +53,7 @@ PD_REGISTER_KERNEL(sum,
+                    phi::complex128) {
+   kernel->OutputAt(0).SetDataType(phi::DataType::UNDEFINED);
+ }
++#endif
+ 
+ #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+ PD_REGISTER_KERNEL(sum,
+diff --git a/paddle/phi/kernels/shape_kernel.cc b/paddle/phi/kernels/shape_kernel.cc
+index a7725ae29b..46a1683cdc 100644
+--- a/paddle/phi/kernels/shape_kernel.cc
++++ b/paddle/phi/kernels/shape_kernel.cc
+@@ -45,6 +45,7 @@ void Shape64Kernel(const Context& dev_ctx,
+ 
+ }  // namespace phi
+ 
++#ifndef PADDLE_WITH_COREX
+ PD_REGISTER_KERNEL(shape,
+                    CPU,
+                    ALL_LAYOUT,
+@@ -62,6 +63,7 @@ PD_REGISTER_KERNEL(shape,
+   kernel->OutputAt(0).SetBackend(phi::Backend::CPU);
+   kernel->OutputAt(0).SetDataType(phi::DataType::INT32);
+ }
++#endif
+ 
+ #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+ PD_REGISTER_KERNEL(shape,
+diff --git a/paddle/phi/kernels/squeeze_kernel.cc b/paddle/phi/kernels/squeeze_kernel.cc
+index 56e5b97ed4..a133b455e3 100644
+--- a/paddle/phi/kernels/squeeze_kernel.cc
++++ b/paddle/phi/kernels/squeeze_kernel.cc
+@@ -45,6 +45,7 @@ void SqueezeWithXShapeKernel(const Context& dev_ctx,
+ 
+ }  // namespace phi
+ 
++#ifndef PADDLE_WITH_COREX
+ PD_REGISTER_KERNEL(squeeze,
+                    CPU,
+                    ALL_LAYOUT,
+@@ -78,6 +79,7 @@ PD_REGISTER_KERNEL(squeeze_with_xshape,
+                    phi::bfloat16,
+                    phi::complex64,
+                    phi::complex128) {}
++#endif
+ #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+ PD_REGISTER_KERNEL(squeeze,
+                    GPU,
+diff --git a/paddle/phi/kernels/strided_slice_kernel.cc b/paddle/phi/kernels/strided_slice_kernel.cc
+index f23205e77b..6ca041fd0b 100644
+--- a/paddle/phi/kernels/strided_slice_kernel.cc
++++ b/paddle/phi/kernels/strided_slice_kernel.cc
+@@ -34,6 +34,7 @@ void StridedSliceKernel(const Context& dev_ctx,
+ 
+ }  // namespace phi
+ 
++#ifndef PADDLE_WITH_COREX
+ PD_REGISTER_KERNEL(strided_slice,
+                    CPU,
+                    ALL_LAYOUT,
+@@ -50,6 +51,7 @@ PD_REGISTER_KERNEL(strided_slice,
+                    phi::bfloat16,
+                    phi::complex64,
+                    phi::complex128) {}
++#endif
+ #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+ PD_REGISTER_KERNEL(strided_slice,
+                    GPU,
+diff --git a/paddle/phi/kernels/unsqueeze_kernel.cc b/paddle/phi/kernels/unsqueeze_kernel.cc
+index ffdf995ece..4a7e03f4ad 100644
+--- a/paddle/phi/kernels/unsqueeze_kernel.cc
++++ b/paddle/phi/kernels/unsqueeze_kernel.cc
+@@ -49,6 +49,7 @@ void UnsqueezeWithXShapeKernel(const Context& dev_ctx,
+ }
+ }  // namespace phi
+ 
++#ifndef PADDLE_WITH_COREX
+ PD_REGISTER_KERNEL(unsqueeze,
+                    CPU,
+                    ALL_LAYOUT,
+@@ -80,6 +81,7 @@ PD_REGISTER_KERNEL(unsqueeze_with_xshape,
+                    int64_t,
+                    phi::complex64,
+                    phi::complex128) {}
++#endif
+ #if defined(PADDLE_WITH_CUDA) || defined(PADDLE_WITH_HIP)
+ PD_REGISTER_KERNEL(unsqueeze,
+                    GPU,
