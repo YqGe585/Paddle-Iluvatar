@@ -17,11 +17,13 @@ set(PROJ_NAME "paddle-iluvatar-gpu")
 set(TARGET_NAME ${PROJ_NAME})
 project(${PROJ_NAME} CXX C CUDA)
 
-set(ILUVATAR_PYTHON_PACKAGE_NAME "paddlepaddle-iluvatar" CACHE STRING
-  "Override Paddle python package name for iluvatar builds")
+set(ILUVATAR_PYTHON_PACKAGE_NAME
+    "paddlepaddle-iluvatar"
+    CACHE STRING "Override Paddle python package name for iluvatar builds")
 if(ILUVATAR_PYTHON_PACKAGE_NAME)
-  set(PADDLE_PYTHON_PACKAGE_NAME "${ILUVATAR_PYTHON_PACKAGE_NAME}"
-    CACHE STRING "" FORCE)
+  set(PADDLE_PYTHON_PACKAGE_NAME
+      "${ILUVATAR_PYTHON_PACKAGE_NAME}"
+      CACHE STRING "" FORCE)
 endif()
 
 if(NOT DEFINED PADDLE_SOURCE_DIR)
@@ -33,9 +35,13 @@ endif()
 if(CUSTOM_DEVICE_CMAKE_ARGS)
   foreach(arg IN LISTS CUSTOM_DEVICE_CMAKE_ARGS)
     if(arg MATCHES "^-D([^=]+)=(.*)$")
-      set(${CMAKE_MATCH_1} "${CMAKE_MATCH_2}" CACHE STRING "" FORCE)
+      set(${CMAKE_MATCH_1}
+          "${CMAKE_MATCH_2}"
+          CACHE STRING "" FORCE)
     elseif(arg MATCHES "^-D([^=]+)$")
-      set(${CMAKE_MATCH_1} ON CACHE BOOL "" FORCE)
+      set(${CMAKE_MATCH_1}
+          ON
+          CACHE BOOL "" FORCE)
     endif()
   endforeach()
 endif()
@@ -49,21 +55,12 @@ set(CMAKE_INSTALL_RPATH "")
 
 set(WITH_MKLML ON)
 
-# include(paddle)
-# set(THIRD_PARTY_PATH
-#     "${PADDLE_SOURCE_DIR}/build/third_party"
-#     CACHE PATH "Third party libraries directory.")
-# include(version)
-# include(generic)
-# include(cblas)
-# include(external/eigen)
-# include(external/xxhash)
-# include(external/zlib)
-# include(external/protobuf)
-# if(WITH_FLAGCX)
-#   add_definitions("-DPADDLE_WITH_FLAGCX")
-#   include(external/flagcx)
-# endif()
+# include(paddle) set(THIRD_PARTY_PATH "${PADDLE_SOURCE_DIR}/build/third_party"
+# CACHE PATH "Third party libraries directory.") include(version)
+# include(generic) include(cblas) include(external/eigen)
+# include(external/xxhash) include(external/zlib) include(external/protobuf)
+# if(WITH_FLAGCX) add_definitions("-DPADDLE_WITH_FLAGCX")
+# include(external/flagcx) endif()
 
 set(PLUGIN_VERSION ${PADDLE_VERSION})
 set(PROTO_FILE "${PADDLE_SOURCE_DIR}/paddle/phi/core/external_error.proto")
@@ -99,11 +96,11 @@ set_target_properties(external_error_proto PROPERTIES POSITION_INDEPENDENT_CODE
                                                       ON)
 set(ILUVATAR_EXTERNAL_DEPS_TARGET iluvatar_external_deps)
 if(WITH_FLAGCX)
-  add_custom_target(${ILUVATAR_EXTERNAL_DEPS_TARGET}
-                    DEPENDS eigen3 zlib protobuf flagcx)
+  add_custom_target(${ILUVATAR_EXTERNAL_DEPS_TARGET} DEPENDS eigen3 zlib
+                                                             protobuf flagcx)
 else()
-  add_custom_target(${ILUVATAR_EXTERNAL_DEPS_TARGET}
-                    DEPENDS eigen3 zlib protobuf)
+  add_custom_target(${ILUVATAR_EXTERNAL_DEPS_TARGET} DEPENDS eigen3 zlib
+                                                             protobuf)
 endif()
 
 if(WITH_COREX)
@@ -870,8 +867,9 @@ add_library(${TARGET_NAME} SHARED ${CUSTOM_DEVICE_SRCS})
 add_dependencies(${TARGET_NAME} ${ILUVATAR_EXTERNAL_DEPS_TARGET})
 
 target_include_directories(
-  ${TARGET_NAME} PRIVATE ${PADDLE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
-                         ${CMAKE_CURRENT_SOURCE_DIR}/kernels ${CUDA_INCLUDE_DIRS})
+  ${TARGET_NAME}
+  PRIVATE ${PADDLE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+          ${CMAKE_CURRENT_SOURCE_DIR}/kernels ${CUDA_INCLUDE_DIRS})
 
 target_link_libraries(
   ${TARGET_NAME}
@@ -913,21 +911,18 @@ set(ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR
 add_custom_command(
   OUTPUT ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/.timestamp
   COMMAND ${CMAKE_COMMAND} -E make_directory
-    ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}
+          ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}
   COMMAND ${CMAKE_COMMAND} -E make_directory
-    ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/include
+          ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/include
   COMMAND ${CMAKE_COMMAND} -E touch
-    ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/__init__.py
-  COMMAND
-    ${CMAKE_COMMAND} -E copy_if_different
-    $<TARGET_FILE:${TARGET_NAME}>
-    ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/headers
-    ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/include
+          ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/__init__.py
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:${TARGET_NAME}>
+          ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/
+  COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/headers
+          ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/include
   COMMAND ${CMAKE_COMMAND} -E touch
-    ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/.timestamp
+          ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/.timestamp
   DEPENDS ${TARGET_NAME}
   COMMENT "Copy iluvatar plugin files to Paddle build directory")
 add_custom_target(custom_device_package_copy
-      DEPENDS ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/.timestamp)
+                  DEPENDS ${ILUVATAR_PADDLE_CUSTOM_DEVICE_DIR}/.timestamp)
