@@ -87,7 +87,8 @@ PD_CUSTOM_KERNEL_REGISTER(elementwise_pow_grad,
                           int,
                           phi::dtype::float16,
                           phi::dtype::bfloat16,
-                          int64_t) {}
+                          int64_t,
+                          phi::complex64) {}
 
 PD_CUSTOM_KERNEL_REGISTER(add_grad,
                           iluvatar_gpu,
