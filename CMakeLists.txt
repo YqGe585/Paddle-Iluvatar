@@ -843,7 +843,7 @@ file(
   RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
   runtime/runtime.cc
   runtime/iluvatar_context.cc
-  common/*.cc
+  flags/*.cc
   kernels/cuda_kernels/*.cc
   kernels/cuda_kernels/*.cu
   kernels/ernie_core/*.cu
