@@ -26,10 +26,6 @@ jobs:
       TASK: paddle-CI-${{ github.event.pull_request.number }}-cpu
 
     steps:
-      - name: Cleanup
-        run: |
-          rm -rf * .[^.]*
-
       - name: Check docker image and run container
         env:
           python: "python3.10"
