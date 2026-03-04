@@ -17,8 +17,65 @@ env:
   BRANCH: develop
 
 jobs:
+  Clone:
+    name: Clone
+    if: ${{ github.repository_owner == 'PaddlePaddle' }}
+    runs-on:
+      group: HK-Clone
+
+    steps:
+      - name: Clone Paddle-iluvatar
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          submodules: 'recursive'
+          fetch-depth: 1000
+
+      - name: Merge PR to test branch
+        run: |
+          set -x
+          git config user.name "PaddleCI"
+          git config user.email "paddle_ci@example.com"
+          git fetch origin pull/${{ github.event.pull_request.number }}/head
+          git checkout -b test FETCH_HEAD
+          git merge --no-edit ${BRANCH}
+          git submodule sync
+          git submodule update --init --recursive --force
+
+      - name: Download bos client
+        env:
+          home_path: "/home/paddle/actions-runner/"
+          bos_file: "/home/paddle/actions-runner/bos/BosClient.py"
+        run: |
+          if [ ! -f "${bos_file}" ]; then
+            wget -q --no-proxy -O ${home_path}/bos_new.tar.gz https://xly-devops.bj.bcebos.com/home/bos_new.tar.gz --no-check-certificate
+            mkdir ${home_path}/bos
+            tar xf ${home_path}/bos_new.tar.gz -C ${home_path}/bos
+          fi
+
+      - name: Push to BOS
+        env:
+          AK: paddle
+          SK: paddle
+          bos_file: "/home/paddle/actions-runner/bos/BosClient.py"
+        run: |
+          set -x
+          cd ..
+          tar -I 'zstd -T0' -cf Paddle-iluvatar.tar.gz Paddle-iluvatar
+          echo "::group::Install bce-python-sdk"
+          python -m pip install bce-python-sdk==0.8.74
+          echo "::endgroup::"
+          python ${bos_file} Paddle-iluvatar.tar.gz paddle-github-action/Paddle-iluvatar/PR/${PR_ID}/${COMMIT_ID}
+          rm Paddle-iluvatar.tar.gz
+          cd -
+          git switch ${BRANCH}
+          set +e
+          git branch -D test
+          git gc
+
   Codestyle-Check:
     name: Codestyle-Check
+    needs: Clone
     if: ${{ github.repository_owner == 'PaddlePaddle' }}
     runs-on:
       group: APPROVAL
@@ -26,6 +83,10 @@ jobs:
       TASK: paddle-CI-${{ github.event.pull_request.number }}-cpu
 
     steps:
+      - name: Cleanup
+        run: |
+          rm -rf * .[^.]*
+
       - name: Check docker image and run container
         env:
           python: "python3.10"
@@ -48,14 +109,14 @@ jobs:
             -e GITHUB_API_TOKEN \
             -w /paddle --network host ${docker_image} /bin/bash
 
-      - name: Checkout code in container
+      - name: Download Code
         run: |
           docker exec -t ${{ env.container_name }} /bin/bash -c '
-          set -x
+          wget -q --tries=5 --no-proxy https://paddle-github-action.bj.bcebos.com/Paddle-iluvatar/PR/${PR_ID}/${COMMIT_ID}/Paddle-iluvatar.tar.gz --no-check-certificate
+          echo "Extracting Paddle-iluvatar.tar.gz"
+          tar -xf Paddle-iluvatar.tar.gz --strip-components=1
           git config --global --add safe.directory "*"
-          git clone --depth=50 https://github.com/${{ github.repository }}.git .
-          git fetch origin pull/${{ env.PR_ID }}/head:pr-branch
-          git checkout pr-branch
+          git remote add upstream https://github.com/${{ github.repository }}.git
           git merge ${BRANCH} --no-edit
           pip install cpplint==1.6.0
           pre-commit install'
@@ -91,29 +152,32 @@ jobs:
       no_proxy: "bcebos.com,apiin.im.baidu.com,gitee.com,aliyun.com,.baidu.com,.tuna.tsinghua.edu.cn"
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Configure git safe directory
+      - name: Download Code
         run: |
+          set -x
+          wget -q --tries=5 --no-proxy https://paddle-github-action.bj.bcebos.com/Paddle-iluvatar/PR/${PR_ID}/${COMMIT_ID}/Paddle-iluvatar.tar.gz --no-check-certificate
+          echo "Extracting Paddle-iluvatar.tar.gz"
+          tar -xf Paddle-iluvatar.tar.gz
+          cd Paddle-iluvatar
           git config --global --add safe.directory "*"
+          git merge ${BRANCH} --no-edit
+          git --no-pager log --pretty=oneline -5
 
       - name: Build paddlepaddle-iluvatar
         run: |
           export PATH=/usr/local/corex/bin:$PATH
+          cd Paddle-iluvatar
           bash build_paddle.sh
 
       - name: Install paddlepaddle-iluvatar
         run: |
-          pip install Paddle/build/python/dist/paddlepaddle_iluvatar*.whl
+          pip install Paddle-iluvatar/Paddle/build/python/dist/paddlepaddle_iluvatar*.whl
           python3 -m pip install parameterized
 
       - name: Run Tests
         run: |
           export FLAG_SKIP_FLOAT64=1
-          cd tests
+          cd Paddle-iluvatar/tests
           bash run_test.sh
 
       - name: Cleanup
