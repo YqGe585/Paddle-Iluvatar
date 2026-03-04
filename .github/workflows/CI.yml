@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [develop, release/**]
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.event.pull_request.number }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+env:
+  PR_ID: ${{ github.event.pull_request.number }}
+  COMMIT_ID: ${{ github.event.pull_request.head.sha }}
+  BRANCH: develop
+
+jobs:
+  Codestyle-Check:
+    name: Codestyle-Check
+    if: ${{ github.repository_owner == 'PaddlePaddle' }}
+    runs-on:
+      group: APPROVAL
+    env:
+      TASK: paddle-CI-${{ github.event.pull_request.number }}-cpu
+
+    steps:
+      - name: Cleanup
+        run: |
+          rm -rf * .[^.]*
+
+      - name: Check docker image and run container
+        env:
+          python: "python3.10"
+          GIT_PR_ID: ${{ github.event.pull_request.number || '0' }}
+          GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.run_id }}
+          docker_image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/ci/paddle:19d3669ca5ff0b19144a785bb3126d7e
+        run: |
+          container_name=${TASK}-$(date +%Y%m%d-%H%M%S)
+          echo "container_name=${container_name}" >> $GITHUB_ENV
+          docker run -d -t --name ${container_name} --shm-size=128g \
+            -v ${{ github.workspace }}/../../..:${{ github.workspace }}/../../.. \
+            -v ${{ github.workspace }}:/paddle \
+            -e python \
+            -e BRANCH \
+            -e PR_ID \
+            -e COMMIT_ID \
+            -e RUN_ID \
+            -e GIT_PR_ID \
+            -e GITHUB_API_TOKEN \
+            -w /paddle --network host ${docker_image} /bin/bash
+
+      - name: Checkout code in container
+        run: |
+          docker exec -t ${{ env.container_name }} /bin/bash -c '
+          set -x
+          git config --global --add safe.directory "*"
+          git clone --depth=50 https://github.com/${{ github.repository }}.git .
+          git fetch origin pull/${{ env.PR_ID }}/head:pr-branch
+          git checkout pr-branch
+          git merge ${BRANCH} --no-edit
+          pip install cpplint==1.6.0
+          pre-commit install'
+
+      - name: Run Codestyle Check
+        run: |
+          docker exec -t ${{ env.container_name }} /bin/bash -c '
+          bash tools/codestyle/pre_commit.sh'
+
+      - name: Terminate and delete the container
+        if: always()
+        run: |
+          docker exec -t ${{ env.container_name }} /bin/bash -c '
+          rm -rf * .[^.]*
+          ' || true
+          docker stop ${{ env.container_name }} || true
+          docker rm ${{ env.container_name }} || true
+
+  PR-CI-IXUCA:
+    name: PR-CI-IXUCA
+    needs: Codestyle-Check
+    if: ${{ github.repository_owner == 'PaddlePaddle' }}
+    runs-on: iluvatar-gpu-2
+    container:
+      image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/device/paddle-ixuca:3.3.0
+      env:
+        LD_LIBRARY_PATH: /usr/local/corex/lib
+        LIBRARY_PATH: /usr/local/corex/lib
+    env:
+      PR_ID: ${{ github.event.pull_request.number }}
+      COMMIT_ID: ${{ github.event.pull_request.head.sha }}
+      BRANCH: develop
+      no_proxy: "bcebos.com,apiin.im.baidu.com,gitee.com,aliyun.com,.baidu.com,.tuna.tsinghua.edu.cn"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Configure git safe directory
+        run: |
+          git config --global --add safe.directory "*"
+
+      - name: Build paddlepaddle-iluvatar
+        run: |
+          export PATH=/usr/local/corex/bin:$PATH
+          bash build_paddle.sh
+
+      - name: Install paddlepaddle-iluvatar
+        run: |
+          pip install Paddle/build/python/dist/paddlepaddle_iluvatar*.whl
+          python3 -m pip install parameterized
+
+      - name: Run Tests
+        run: |
+          export FLAG_SKIP_FLOAT64=1
+          cd tests
+          bash run_test.sh
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf * .[^.]*
+          chmod -R 777 . || true
