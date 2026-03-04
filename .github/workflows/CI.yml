@@ -168,8 +168,8 @@ jobs:
           export PATH=/usr/local/corex/bin:$PATH
           cd Paddle-iluvatar
           apt-get install -y patchelf
-          export https_proxy=http://oversea-website-proxy.aistudio.public:8888
-          export http_proxy=http://oversea-website-proxy.aistudio.public:8888
+          # export https_proxy=http://oversea-website-proxy.aistudio.public:8888
+          # export http_proxy=http://oversea-website-proxy.aistudio.public:8888
           bash build_paddle.sh
 
       - name: Install paddlepaddle-iluvatar
