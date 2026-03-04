@@ -29,7 +29,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.ref }}
           submodules: 'recursive'
-          fetch-depth: 1000
+          fetch-depth: 0
 
       - name: Merge PR to test branch
         run: |
@@ -41,6 +41,13 @@ jobs:
           git merge --no-edit ${BRANCH}
           git submodule sync
           git submodule update --init --recursive --force
+          cd Paddle/third_party/protobuf
+          git fetch --tags
+          cd ../pybind
+          git fetch --tags
+          cd ../gloo
+          git fetch --tags
+          cd ../../..
 
       - name: Download bos client
         env:
