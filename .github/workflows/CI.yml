@@ -167,6 +167,7 @@ jobs:
         run: |
           export PATH=/usr/local/corex/bin:$PATH
           cd Paddle-iluvatar
+          apt-get install -y patchelf
           bash build_paddle.sh
 
       - name: Install paddlepaddle-iluvatar
