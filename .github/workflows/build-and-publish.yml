@@ -1,0 +1,175 @@
+name: Build and Publish Paddle-Iluvatar WHL
+
+on:
+  # 每天北京时间 0 点自动触发 (UTC 16:00)
+  schedule:
+    - cron: '0 16 * * *'
+  
+  # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      upload_to_bos:
+        description: 'Upload whl to BOS'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      python_version:
+        description: 'Python version'
+        required: false
+        default: '3.10'
+        type: choice
+        options:
+          - '3.8'
+          - '3.9'
+          - '3.10'
+          - '3.11'
+      corex_arch:
+        description: 'Corex architecture'
+        required: false
+        default: 'ivcore11'
+        type: string
+
+env:
+  PYTHON_VERSION: ${{ github.event.inputs.python_version || '3.10' }}
+  COREX_ARCH: ${{ github.event.inputs.corex_arch || 'ivcore11' }}
+  BUILD_TEST: 0
+
+jobs:
+  # Job 1: 在可访问 GitHub 的机器上 clone 代码并上传到 BOS
+  clone:
+    name: Clone and Upload Code
+    uses: ./.github/workflows/_clone_linux.yml
+
+  # Job 2: 在天数智芯机器上下载代码并构建
+  build:
+    name: Build Paddle-Iluvatar WHL
+    needs: clone
+    environment: PublishUploadUse
+    runs-on: iluvatar-gpu-2
+    container:
+      image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/device/paddle-ixuca:3.3.0
+      env:
+        LD_LIBRARY_PATH: /usr/local/corex/lib
+        LIBRARY_PATH: /usr/local/corex/lib
+    steps:
+      - name: Clean workspace
+        run: |
+          echo "Cleaning workspace..."
+          rm -rf ${{ github.workspace }}/*
+
+      - name: Download code from BOS
+        run: |
+          echo "Downloading code from: ${{ needs.clone.outputs.repo_archive_url }}"
+          wget -q ${{ needs.clone.outputs.repo_archive_url }} -O Paddle-Iluvatar.tar.gz
+          tar -zxf Paddle-Iluvatar.tar.gz
+          mv Paddle-Iluvatar/* .
+          rm -rf Paddle-Iluvatar Paddle-Iluvatar.tar.gz
+          
+          echo "=== Code downloaded successfully ==="
+          ls -la
+
+      - name: Setup environment
+        run: |
+          echo "Setting up build environment..."
+          python3 --version
+          python3 -m pip list
+          
+          # 设置 Corex SDK 环境变量
+          export PATH=/usr/local/corex/bin:$PATH
+          export LD_LIBRARY_PATH=/usr/local/corex/lib:$LD_LIBRARY_PATH
+          export LIBRARY_PATH=/usr/local/corex/lib:$LIBRARY_PATH
+          
+          echo "PATH=/usr/local/corex/bin:$PATH" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/corex/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+          echo "LIBRARY_PATH=/usr/local/corex/lib:$LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Get version info
+        id: version
+        run: |
+          GIT_COMMIT_TIME=$(git --no-pager show -s --format=%ci HEAD)
+          DATE_ONLY=$(echo "$GIT_COMMIT_TIME" | sed "s/ .*//;s/-//g")
+          echo "Git Commit Time: $GIT_COMMIT_TIME"
+          echo "Date Only: $DATE_ONLY"
+          echo "date=$DATE_ONLY" >> $GITHUB_OUTPUT
+          
+          # 判断是否是 tag
+          if git describe --tags --exact-match >/dev/null 2>&1; then
+            TAG_NAME=$(git describe --tags --exact-match)
+            echo "is_tag=true" >> $GITHUB_OUTPUT
+            echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+            echo "version=$TAG_NAME" >> $GITHUB_OUTPUT
+          else
+            echo "is_tag=false" >> $GITHUB_OUTPUT
+            echo "version=0.0.0.dev$DATE_ONLY" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build paddle whl
+        run: |
+          echo "Starting build process..."
+          export PYTHON_VERSION=${{ env.PYTHON_VERSION }}
+          export COREX_ARCH=${{ env.COREX_ARCH }}
+          export BUILD_TEST=${{ env.BUILD_TEST }}
+          
+          bash build_paddle.sh
+          
+          echo "Build completed successfully!"
+          ls -la Paddle/build/python/dist/ || true
+
+      - name: Upload whl as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: paddle-iluvatar-whl-${{ steps.version.outputs.date }}
+          path: Paddle/build/python/dist/*.whl
+          retention-days: 30
+
+      - name: Upload to BOS
+        if: ${{ github.event.inputs.upload_to_bos != 'false' }}
+        env:
+          AK: ${{ secrets.BOS_AK }}
+          SK: ${{ secrets.BOS_SK }}
+        run: |
+          # 安装 BOS SDK
+          python3 -m pip install bce-python-sdk==0.9.29
+          
+          # 下载上传工具
+          wget -q https://paddle-qa.bj.bcebos.com/CodeSync/develop/PaddlePaddle/PaddleTest/tools/bos_tools.py
+          
+          # 确定上传路径
+          if [ "${{ steps.version.outputs.is_tag }}" == "true" ]; then
+            WHL_PACKAGE="paddle-whl/stable/ixuca/paddle-iluvatar"
+          else
+            WHL_PACKAGE="paddle-whl/nightly/ixuca/paddle-iluvatar"
+          fi
+          
+          echo "Uploading to: $WHL_PACKAGE"
+          
+          # 上传所有 whl 文件
+          cd Paddle/build/python/dist/
+          for whl_file in *.whl; do
+            echo "Uploading: ${whl_file}"
+            python3 ../../../bos_tools.py "${whl_file}" "${WHL_PACKAGE}"
+          done
+          
+          echo "Upload completed!"
+
+  # Job 3: 通知构建结果
+  notify:
+    name: Notify Build Result
+    needs: [clone, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Build Success Notification
+        if: ${{ needs.build.result == 'success' }}
+        run: |
+          echo "Build and upload succeeded!"
+          # 可以在这里添加通知逻辑
+
+      - name: Build Failure Notification
+        if: ${{ needs.build.result == 'failure' }}
+        run: |
+          echo "Build or upload failed!"
+          # 可以在这里添加失败通知逻辑

@@ -1,0 +1,83 @@
+name: Paddle-Iluvatar Code Clone
+description: "Clone Paddle-Iluvatar repo with submodules and upload to BOS"
+
+on:
+  workflow_call:
+    inputs:
+      bos_dir:
+        type: string
+        required: false
+        default: 'Paddle-Iluvatar'
+    outputs:
+      repo_archive_url:
+        description: "Compressed source code archive URL"
+        value: ${{ jobs.code-clone.outputs.repo_archive_url }}
+
+jobs:
+  code-clone:
+    runs-on:
+      group: HK-Clone
+    outputs:
+      repo_archive_url: ${{ steps.set_output.outputs.repo_archive_url }}
+    steps:
+      - name: Clone Paddle-Iluvatar
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          submodules: 'recursive'
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Code Info Show and Upload
+        id: set_output
+        env:
+          AK: paddle
+          SK: paddle
+        run: |
+          # 清理 git 配置中的 extraheader，避免凭证泄露
+          git config --unset http.https://github.com/.extraheader || true
+          git submodule foreach --recursive sh -c "git config --local --unset-all 'http.https://github.com/.extraheader' || true"
+          git submodule foreach --recursive sh -c "git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+          
+          echo "=== Current HEAD Log ==="
+          git log --oneline -n 5
+          
+          echo "=== Submodules Status ==="
+          git submodule status --recursive
+          
+          echo "=== Directory Structure ==="
+          ls -la
+          
+          # 打包代码（包含 submodules）
+          cd ..
+          tar -zcf Paddle-Iluvatar.tar.gz Paddle-Iluvatar
+          
+          # 确定上传路径
+          commit_id=${{ github.sha }}
+          branch_name=${{ github.ref_name }}
+          
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag_name=${{ github.ref_name }}
+            target_path=paddle-github-action/TAG/Paddle-Iluvatar/${tag_name}/${commit_id}
+          else
+            target_path=paddle-github-action/BRANCH/Paddle-Iluvatar/${branch_name}/${commit_id}
+          fi
+          
+          echo "Target path: ${target_path}"
+          
+          # 下载上传工具并上传
+          wget -O bos_tools.py -q --no-proxy --no-check-certificate https://paddle-qa.bj.bcebos.com/CodeSync/develop/PaddlePaddle/PaddleTest/tools/bos_tools.py
+          push_file=$(realpath bos_tools.py)
+          python -m pip install bce-python-sdk==0.9.29
+          
+          ls -la
+          python ${push_file} Paddle-Iluvatar.tar.gz ${target_path}
+          
+          # 输出下载 URL
+          target_path_stripped="${target_path#paddle-github-action/}"
+          REPO_ARCHIVE_URL=https://paddle-github-action.bj.bcebos.com/${target_path_stripped}/Paddle-Iluvatar.tar.gz
+          echo "repo_archive_url=${REPO_ARCHIVE_URL}" >> $GITHUB_OUTPUT
+          echo "Archive URL: ${REPO_ARCHIVE_URL}"
