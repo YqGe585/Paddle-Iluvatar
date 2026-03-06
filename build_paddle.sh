@@ -16,7 +16,7 @@
 
 # Exit immediately if a command exits with a non-zero status
 set -e
-
+echo "START BUILDING!!!!!!!!!!!!!!!"
 PYTHON_VERSION=${PYTHON_VERSION:-$(python3 -V 2>&1|awk '{print $2}')}
 COREX_VERSION=${COREX_VERSION:-latest}
 if [[ "${COREX_VERSION}" == "latest" ]]; then
