@@ -62,11 +62,16 @@ jobs:
 
       - name: Download code from BOS
         run: |
+          set -x
           echo "Downloading code from: ${{ needs.clone.outputs.repo_archive_url }}"
-          wget -q ${{ needs.clone.outputs.repo_archive_url }} -O Paddle-Iluvatar.tar.gz
-          tar -zxf Paddle-Iluvatar.tar.gz
-          mv Paddle-Iluvatar/* .
-          rm -rf Paddle-Iluvatar Paddle-Iluvatar.tar.gz
+          wget -q --no-proxy ${{ needs.clone.outputs.repo_archive_url }} --no-check-certificate
+          
+          echo "Extracting Paddle-iluvatar.tar.gz"
+          tar -xf Paddle-iluvatar.tar.gz
+          cd Paddle-iluvatar
+          
+          git config --global --add safe.directory "*"
+          git --no-pager log --pretty=oneline -5
           
           echo "=== Code downloaded successfully ==="
           ls -la
@@ -76,19 +81,11 @@ jobs:
           echo "Setting up build environment..."
           python3 --version
           python3 -m pip list
-          
-          # 设置 Corex SDK 环境变量
-          export PATH=/usr/local/corex/bin:$PATH
-          export LD_LIBRARY_PATH=/usr/local/corex/lib:$LD_LIBRARY_PATH
-          export LIBRARY_PATH=/usr/local/corex/lib:$LIBRARY_PATH
-          
-          echo "PATH=/usr/local/corex/bin:$PATH" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/corex/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-          echo "LIBRARY_PATH=/usr/local/corex/lib:$LIBRARY_PATH" >> $GITHUB_ENV
 
       - name: Get version info
         id: version
         run: |
+          cd Paddle-iluvatar
           GIT_COMMIT_TIME=$(git --no-pager show -s --format=%ci HEAD)
           DATE_ONLY=$(echo "$GIT_COMMIT_TIME" | sed "s/ .*//;s/-//g")
           echo "Git Commit Time: $GIT_COMMIT_TIME"
@@ -109,10 +106,12 @@ jobs:
       - name: Build paddle whl
         run: |
           echo "Starting build process..."
+          export PATH=/usr/local/corex/bin:$PATH
           export PYTHON_VERSION=${{ env.PYTHON_VERSION }}
           export COREX_ARCH=${{ env.COREX_ARCH }}
           export BUILD_TEST=${{ env.BUILD_TEST }}
           
+          cd Paddle-iluvatar
           bash build_paddle.sh
           
           echo "Build completed successfully!"
@@ -122,7 +121,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: paddle-iluvatar-whl-${{ steps.version.outputs.date }}
-          path: Paddle/build/python/dist/*.whl
+          path: Paddle-iluvatar/Paddle/build/python/dist/*.whl
           retention-days: 30
 
       - name: Upload to BOS
@@ -147,10 +146,10 @@ jobs:
           echo "Uploading to: $WHL_PACKAGE"
           
           # 上传所有 whl 文件
-          cd Paddle/build/python/dist/
+          cd Paddle-iluvatar/Paddle/build/python/dist/
           for whl_file in *.whl; do
             echo "Uploading: ${whl_file}"
-            python3 ../../../bos_tools.py "${whl_file}" "${WHL_PACKAGE}"
+            python3 ../../../../bos_tools.py "${whl_file}" "${WHL_PACKAGE}"
           done
           
           echo "Upload completed!"

@@ -1,13 +1,13 @@
-name: Paddle-Iluvatar Code Clone
-description: "Clone Paddle-Iluvatar repo with submodules and upload to BOS"
+name: Paddle-iluvatar Code Clone
+description: "Clone Paddle-iluvatar repo with submodules and upload to BOS"
 
 on:
   workflow_call:
     inputs:
-      bos_dir:
+      branch:
         type: string
         required: false
-        default: 'Paddle-Iluvatar'
+        default: 'develop'
     outputs:
       repo_archive_url:
         description: "Compressed source code archive URL"
@@ -18,29 +18,41 @@ jobs:
     runs-on:
       group: HK-Clone
     outputs:
-      repo_archive_url: ${{ steps.set_output.outputs.repo_archive_url }}
+      repo_archive_url: ${{ steps.upload.outputs.repo_archive_url }}
     steps:
-      - name: Clone Paddle-Iluvatar
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref_name }}
-          submodules: 'recursive'
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Code Info Show and Upload
-        id: set_output
-        env:
-          AK: paddle
-          SK: paddle
+      - name: Cleanup workspace
         run: |
-          # 清理 git 配置中的 extraheader，避免凭证泄露
-          git config --unset http.https://github.com/.extraheader || true
-          git submodule foreach --recursive sh -c "git config --local --unset-all 'http.https://github.com/.extraheader' || true"
-          git submodule foreach --recursive sh -c "git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'"
+          rm -rf Paddle-iluvatar || true
+
+      - name: Clone Paddle-iluvatar
+        run: |
+          set -x
+          REPO_URL="https://github.com/${{ github.repository }}.git"
+          BRANCH="${{ inputs.branch || github.ref_name }}"
+          echo "Cloning from: ${REPO_URL}"
+          echo "Branch: ${BRANCH}"
+          
+          git clone --branch ${BRANCH} ${REPO_URL} Paddle-iluvatar
+          cd Paddle-iluvatar
+          
+          echo "=== Updating submodules ==="
+          git submodule sync
+          git submodule update --init --recursive --force
+          
+          # 获取 submodule 的 tags（参考 CI.yml）
+          cd Paddle/third_party/protobuf
+          git fetch --tags
+          cd ../pybind
+          git fetch --tags
+          cd ../gloo
+          git fetch --tags
+          cd ..
+          
+          # 确保 sleef 存在
+          if [ ! -d "sleef" ]; then
+            git clone https://github.com/shibatch/sleef.git
+          fi
+          cd ../../
           
           echo "=== Current HEAD Log ==="
           git log --oneline -n 5
@@ -50,34 +62,51 @@ jobs:
           
           echo "=== Directory Structure ==="
           ls -la
+
+      - name: Download BOS client
+        env:
+          home_path: "/home/paddle/actions-runner/"
+          bos_file: "/home/paddle/actions-runner/bos/BosClient.py"
+        run: |
+          if [ ! -f "${bos_file}" ]; then
+            wget -q --no-proxy -O ${home_path}/bos_new.tar.gz https://xly-devops.bj.bcebos.com/home/bos_new.tar.gz --no-check-certificate
+            mkdir -p ${home_path}/bos
+            tar xf ${home_path}/bos_new.tar.gz -C ${home_path}/bos
+          fi
+
+      - name: Push to BOS
+        id: upload
+        env:
+          AK: paddle
+          SK: paddle
+          bos_file: "/home/paddle/actions-runner/bos/BosClient.py"
+        run: |
+          set -x
+          commit_id=${{ github.sha }}
+          branch_name=${{ inputs.branch || github.ref_name }}
           
-          # 打包代码（包含 submodules）
-          cd ..
-          tar -zcf Paddle-Iluvatar.tar.gz Paddle-Iluvatar
+          # 使用 zstd 压缩（更快）
+          tar -I 'zstd -T0' -cf Paddle-iluvatar.tar.gz Paddle-iluvatar
+          
+          echo "::group::Install bce-python-sdk"
+          python -m pip install bce-python-sdk==0.8.74
+          echo "::endgroup::"
           
           # 确定上传路径
-          commit_id=${{ github.sha }}
-          branch_name=${{ github.ref_name }}
-          
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            tag_name=${{ github.ref_name }}
-            target_path=paddle-github-action/TAG/Paddle-Iluvatar/${tag_name}/${commit_id}
+            target_path="paddle-github-action/Paddle-iluvatar/TAG/${{ github.ref_name }}/${commit_id}"
           else
-            target_path=paddle-github-action/BRANCH/Paddle-Iluvatar/${branch_name}/${commit_id}
+            target_path="paddle-github-action/Paddle-iluvatar/BRANCH/${branch_name}/${commit_id}"
           fi
           
-          echo "Target path: ${target_path}"
+          echo "Uploading to: ${target_path}"
+          python ${bos_file} Paddle-iluvatar.tar.gz ${target_path}
           
-          # 下载上传工具并上传
-          wget -O bos_tools.py -q --no-proxy --no-check-certificate https://paddle-qa.bj.bcebos.com/CodeSync/develop/PaddlePaddle/PaddleTest/tools/bos_tools.py
-          push_file=$(realpath bos_tools.py)
-          python -m pip install bce-python-sdk==0.9.29
-          
-          ls -la
-          python ${push_file} Paddle-Iluvatar.tar.gz ${target_path}
+          # 清理
+          rm Paddle-iluvatar.tar.gz
           
           # 输出下载 URL
           target_path_stripped="${target_path#paddle-github-action/}"
-          REPO_ARCHIVE_URL=https://paddle-github-action.bj.bcebos.com/${target_path_stripped}/Paddle-Iluvatar.tar.gz
+          REPO_ARCHIVE_URL="https://paddle-github-action.bj.bcebos.com/${target_path_stripped}/Paddle-iluvatar.tar.gz"
           echo "repo_archive_url=${REPO_ARCHIVE_URL}" >> $GITHUB_OUTPUT
           echo "Archive URL: ${REPO_ARCHIVE_URL}"
