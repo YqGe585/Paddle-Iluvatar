@@ -314,6 +314,19 @@ index 024a7de73e..907ffd5f25 100644
  #elif defined(__HIPCC__)
  #define PADDLE_ENFORCE(_IS_NOT_ERROR, __FORMAT, ...)               \
    do {                                                             \
+diff --git a/paddle/phi/core/memory/allocation/CMakeLists.txt b/paddle/phi/core/memory/allocation/CMakeLists.txt
+index ad327fa68f..1252d8886a 100644
+--- a/paddle/phi/core/memory/allocation/CMakeLists.txt
++++ b/paddle/phi/core/memory/allocation/CMakeLists.txt
+@@ -29,7 +29,7 @@ if(WITH_GPU OR WITH_ROCM)
+     thread_local_allocator.cc)
+ endif()
+ 
+-if(CUDA_VERSION VERSION_GREATER_EQUAL 10.2)
++if(WITH_GPU AND CUDA_VERSION VERSION_GREATER_EQUAL 10.2)
+   list(APPEND ALLOCATOR_SRCS cuda_virtual_mem_allocator.cc
+        cuda_virtual_mem_allocator_v2.cc
+        vmm_auto_growth_best_fit_allocator_v2.cc)
 diff --git a/paddle/phi/core/utils/data_type.h b/paddle/phi/core/utils/data_type.h
 index 5578d50e0c..bb884e156f 100644
 --- a/paddle/phi/core/utils/data_type.h
@@ -1790,5 +1803,3 @@ index 7fb866b75d..7bd6b809f2 100644
              return
  
          print("Test Fixed Random number on GPU------>")
--- 
-2.25.1
