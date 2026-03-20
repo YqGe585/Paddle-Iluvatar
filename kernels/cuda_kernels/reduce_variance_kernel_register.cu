@@ -20,4 +20,4 @@
 #include "paddle/phi/kernels/reduce_variance_kernel.h"
 
 PD_CUSTOM_KERNEL_REGISTER(
-    variance, iluvatar_gpu, ALL_LAYOUT, phi::VarianceKernel, float, double) {}
+    variance, iluvatar_gpu, ALL_LAYOUT, phi::VarianceKernel, float) {}

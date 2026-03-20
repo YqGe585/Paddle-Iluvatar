@@ -12,16 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "paddle/phi/backends/all_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/selected_rows/impl/isfinite_kernel_impl.h"
-#include "paddle/phi/kernels/selected_rows/isfinite_kernel.h"
+#include "paddle/phi/kernels/reduce_kernel_impl.h"
+#include "paddle/phi/kernels/reduce_min_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(isfinite_sr,
+PD_CUSTOM_KERNEL_REGISTER(min,
                           iluvatar_gpu,
                           ALL_LAYOUT,
-                          phi::IsfiniteSR,
+                          phi::MinKernel,
                           float,
                           double,
-                          phi::dtype::float16,
                           int,
-                          int64_t) {}
+                          int64_t,
+                          phi::dtype::float16,
+                          phi::dtype::bfloat16) {}

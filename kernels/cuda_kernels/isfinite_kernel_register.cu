@@ -20,7 +20,6 @@ PD_CUSTOM_KERNEL_REGISTER(isinf,
                           ALL_LAYOUT,
                           phi::IsinfKernel,
                           float,
-                          double,
                           phi::dtype::float16,
                           phi::dtype::bfloat16,
                           int,
@@ -28,8 +27,7 @@ PD_CUSTOM_KERNEL_REGISTER(isinf,
                           int16_t,
                           int8_t,
                           uint8_t,
-                          phi::dtype::complex<float>,
-                          phi::dtype::complex<double>) {
+                          phi::dtype::complex<float>) {
   kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
 }
 
@@ -38,13 +36,11 @@ PD_CUSTOM_KERNEL_REGISTER(isnan,
                           ALL_LAYOUT,
                           phi::IsnanKernel,
                           float,
-                          double,
                           phi::dtype::float16,
                           phi::dtype::bfloat16,
                           int,
                           int64_t,
-                          phi::dtype::complex<float>,
-                          phi::dtype::complex<double>) {
+                          phi::dtype::complex<float>) {
   kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
 }
 
@@ -53,12 +49,10 @@ PD_CUSTOM_KERNEL_REGISTER(isfinite,
                           ALL_LAYOUT,
                           phi::IsfiniteKernel,
                           float,
-                          double,
                           phi::dtype::float16,
                           phi::dtype::bfloat16,
                           int,
                           int64_t,
-                          phi::dtype::complex<float>,
-                          phi::dtype::complex<double>) {
+                          phi::dtype::complex<float>) {
   kernel->OutputAt(0).SetDataType(phi::DataType::BOOL);
 }

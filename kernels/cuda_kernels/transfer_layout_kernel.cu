@@ -12,9 +12,8 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License. */
 
-#include "paddle/phi/kernels/transfer_layout_kernel.h"
-
 #include "paddle/phi/core/kernel_registry.h"
+#include "paddle/phi/kernels/transfer_layout_kernel.h"
 PD_CUSTOM_KERNEL_REGISTER_FOR_ALL_DTYPE(transfer_layout,
                                         iluvatar_gpu,
                                         ALL_LAYOUT,

@@ -12,19 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/kernels/reduce_min_kernel.h"
-
-#include "paddle/phi/backends/all_context.h"
+#include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/reduce_kernel_impl.h"
+#include "paddle/phi/kernels/impl/meshgrid_grad_kernel_impl.h"
+#include "paddle/phi/kernels/meshgrid_grad_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(min,
+PD_CUSTOM_KERNEL_REGISTER(meshgrid_grad,
                           iluvatar_gpu,
                           ALL_LAYOUT,
-                          phi::MinKernel,
+                          phi::MeshgridGradKernel,
+                          phi::dtype::float16,
                           float,
-                          double,
                           int,
                           int64_t,
-                          phi::dtype::float16,
-                          phi::dtype::bfloat16) {}
+                          phi::dtype::bfloat16,
+                          phi::dtype::complex<float>) {}

@@ -41,7 +41,6 @@ PD_CUSTOM_KERNEL_REGISTER(amin_grad,
                           ALL_LAYOUT,
                           phi::ReduceAMinGradKernel,
                           float,
-                          double,
                           int,
                           int64_t) {}
 

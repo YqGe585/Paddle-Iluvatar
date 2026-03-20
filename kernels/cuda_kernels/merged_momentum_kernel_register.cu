@@ -21,8 +21,7 @@ PD_CUSTOM_KERNEL_REGISTER(merged_momentum,
                           ALL_LAYOUT,
                           phi::MergedMomentumKernel,
                           phi::dtype::float16,
-                          float,
-                          double) {
+                          float) {
   if (kernel_key.dtype() == phi::DataType::FLOAT16) {
     kernel->OutputAt(1).SetDataType(phi::DataType::FLOAT32);
     kernel->OutputAt(2).SetDataType(phi::DataType::FLOAT32);

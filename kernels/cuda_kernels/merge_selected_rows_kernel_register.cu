@@ -12,20 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/impl/meshgrid_kernel_impl.h"
-#include "paddle/phi/kernels/meshgrid_kernel.h"
+#include "paddle/phi/kernels/funcs/selected_rows_functor.h"
+#include "paddle/phi/kernels/selected_rows/merge_selected_rows_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(meshgrid,
+PD_CUSTOM_KERNEL_REGISTER(merge_selected_rows,
                           iluvatar_gpu,
                           ALL_LAYOUT,
-                          phi::MeshgridKernel,
-                          phi::dtype::float16,
-                          float,
-                          double,
-                          int,
-                          int64_t,
-                          phi::dtype::bfloat16,
-                          phi::dtype::complex<float>,
-                          phi::dtype::complex<double>) {}
+                          phi::sr::MergeSelectedRowsKernel,
+                          float) {}
