@@ -34,7 +34,6 @@
 COMMON_DECLARE_bool(cudnn_deterministic);
 COMMON_DECLARE_int32(flash_attn_version);
 
-COMMON_DECLARE_bool(enable_ixattnbkd);
 COMMON_DECLARE_int32(imp_mode);
 namespace phi {
 
@@ -326,320 +325,108 @@ void FlashAttnUnpaddedGradBaseKernel(
             << ", causal: " << causal;
   }
 
-  if (FLAGS_enable_ixattnbkd) {
-    // ixattnbkd unpad bwd
-    ixAttnBkdConfigInfo ixAttnbkdInfo;
-    ixAttnbkdInfo.stream = dev_ctx.stream();
-    ixAttnbkdInfo.softmax_scale = std::sqrt(1.f / head_size);
-    ixAttnbkdInfo.dropout_prob = dropout;
-    ixAttnbkdInfo.is_causal = causal;
-    ixAttnbkdInfo.causal_mode = 0;
-    // ixAttnbkdInfo.is_alibi              = use_alibi;
-    // ixAttnbkdInfo.alibi_mode            = alibi_mode;
-    ixAttnbkdInfo.return_softmax_lse = false;
-    ixAttnbkdInfo.philox_args =
-        *(reinterpret_cast<ixAttnBkdPhiloxState*>(&philox_state));
-    ixAttnbkdInfo.imp_mode =
-        FLAGS_imp_mode ? IXATTNBKD_FATTN_MEM_MODE : IXATTNBKD_FATTN_PERF_MODE;
-    ixAttnbkdInfo.is_unpad = true;
-    ixAttnbkdInfo.batch = batch_size;
-    ixAttnbkdInfo.max_seq_len_src = max_seqlen_q;
-    ixAttnbkdInfo.max_seq_len_trg = max_seqlen_k;
-    ixAttnbkdInfo.accuracy_first = accuracy_first;
+  ixAttnBkdConfigInfo ixAttnbkdInfo;
+  ixAttnbkdInfo.stream = dev_ctx.stream();
+  ixAttnbkdInfo.softmax_scale = std::sqrt(1.f / head_size);
+  ixAttnbkdInfo.dropout_prob = dropout;
+  ixAttnbkdInfo.is_causal = causal;
+  ixAttnbkdInfo.causal_mode = 0;
+  // ixAttnbkdInfo.is_alibi              = use_alibi;
+  // ixAttnbkdInfo.alibi_mode            = alibi_mode;
+  ixAttnbkdInfo.return_softmax_lse = false;
+  ixAttnbkdInfo.philox_args =
+      *(reinterpret_cast<ixAttnBkdPhiloxState*>(&philox_state));
+  ixAttnbkdInfo.imp_mode =
+      FLAGS_imp_mode ? IXATTNBKD_FATTN_MEM_MODE : IXATTNBKD_FATTN_PERF_MODE;
+  ixAttnbkdInfo.is_unpad = true;
+  ixAttnbkdInfo.batch = batch_size;
+  ixAttnbkdInfo.max_seq_len_src = max_seqlen_q;
+  ixAttnbkdInfo.max_seq_len_trg = max_seqlen_k;
+  ixAttnbkdInfo.accuracy_first = accuracy_first;
 
-    ixAttnBkdDataType_t dataType;
-    if (q.dtype() == phi::DataType::FLOAT16) {
-      dataType = IXATTNBKD_DATA_HALF;
-    } else if (q.dtype() == phi::DataType::BFLOAT16) {
-      dataType = IXATTNBKD_DATA_BF16;
-    } else if (q.dtype() == phi::DataType::FLOAT32) {
-      dataType = IXATTNBKD_DATA_FLOAT;
-    } else {
-      PADDLE_THROW(common::errors::InvalidArgument(
-          "flash_attn_bwd receive input with dtype == %s",
-          phi::DataTypeToString(q.dtype())));
-    }
-
-    ixAttnBkdTensorDesc q_desc, k_desc, v_desc, o_desc, m_desc, lse_desc,
-        dq_desc, dk_desc, dv_desc, do_desc;
-    SetIxAttnBkdTensor(&q_desc, q, dataType);
-    SetIxAttnBkdTensor(&k_desc, k, dataType);
-    SetIxAttnBkdTensor(&v_desc, v, dataType);
-    SetIxAttnBkdTensor(&o_desc, out, dataType);
-    if (attn_mask) {
-      PADDLE_ENFORCE_NE(causal,
-                        true,
-                        phi::errors::InvalidArgument(
-                            "When attn_mask is set, causal can not be true."));
-
-      PADDLE_ENFORCE_EQ(
-          (attn_mask.get_ptr())->dtype(),
-          q.dtype(),
-          phi::errors::InvalidArgument(
-              "attn_mask is expected to have the same data type with q."));
-
-      SetIxAttnBkdTensor(&m_desc, attn_mask.get_ptr(), dataType);
-    }
-    SetIxAttnBkdTensor(&lse_desc, softmax_lse, IXATTNBKD_DATA_FLOAT);
-    SetIxAttnBkdTensor(&dq_desc, kdq, dataType);
-    SetIxAttnBkdTensor(&dk_desc, kdk, dataType);
-    SetIxAttnBkdTensor(&dv_desc, kdv, dataType);
-    SetIxAttnBkdTensor(&do_desc, dout, dataType);
-
-    size_t size_tmpbuf = 0;
-    PADDLE_IXATTNBKD_CHECK(
-        ixAttnBkdGetFlashAttnBwdBuffSize(batch_size,
-                                         num_heads,
-                                         num_heads_k,
-                                         max_seqlen_q,
-                                         max_seqlen_k,
-                                         head_size,
-                                         head_size_v,
-                                         total_q,
-                                         true,
-                                         &size_tmpbuf,
-                                         ixAttnbkdInfo.imp_mode));
-
-    auto workspace =
-        phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(size_tmpbuf)});
-    PADDLE_IXATTNBKD_CHECK(ixAttnBkdFlashAttnBackward(
-        ixAttnbkdInfo,
-        q_desc,
-        k_desc,
-        v_desc,
-        o_desc,
-        m_desc,
-        lse_desc,
-        dq_desc,
-        dk_desc,
-        dv_desc,
-        do_desc,
-        q.data(),
-        k.data(),
-        v.data(),
-        out.data(),
-        dout.data(),
-        attn_mask.get_ptr() ? (attn_mask.get_ptr())->data() : nullptr,
-        nullptr,
-        nullptr,
-        cu_seqlens_q.data<int>(),
-        cu_seqlens_k.data<int>(),
-        softmax_lse.data<float>(),
-        workspace.data(),
-        kdq->data(),
-        kdk->data(),
-        kdv->data()));
-
+  ixAttnBkdDataType_t dataType;
+  if (q.dtype() == phi::DataType::FLOAT16) {
+    dataType = IXATTNBKD_DATA_HALF;
+  } else if (q.dtype() == phi::DataType::BFLOAT16) {
+    dataType = IXATTNBKD_DATA_BF16;
+  } else if (q.dtype() == phi::DataType::FLOAT32) {
+    dataType = IXATTNBKD_DATA_FLOAT;
   } else {
-    // ixdnn unpad bwd
-    cudnnFlashAttnConfigInfo flashAttnInfo;
-    flashAttnInfo.softmax_scale = std::sqrt(1.f / head_size);
-    flashAttnInfo.dropout_prob = dropout;
-    flashAttnInfo.is_causal = causal;
-    flashAttnInfo.causal_mode = 0;
-    // flashAttnInfo.is_alibi              = use_alibi;
-    // flashAttnInfo.alibi_mode            = alibi_mode;
-    flashAttnInfo.return_softmax_lse = false;
-    flashAttnInfo.philox_args =
-        *(reinterpret_cast<cudnnPhiloxCudaState*>(&philox_state));
-    flashAttnInfo.imp_mode =
-        FLAGS_imp_mode ? CUDNN_FATTN_LEAST_MEM_MODE : CUDNN_FATTN_BALANCE_MODE;
-    flashAttnInfo.is_unpad = true;
-    flashAttnInfo.batch = batch_size;
-    flashAttnInfo.max_seq_len_src = max_seqlen_q;
-    flashAttnInfo.max_seq_len_trg = max_seqlen_k;
-    flashAttnInfo.accuracy_first = accuracy_first;
-
-    int32_t nb_dims = 3;
-    std::vector<int32_t> qShape, kShape, vShape, oShape, lseShape, dqShape,
-        dkShape, dvShape, doShape;
-    std::vector<int32_t> qStride, kStride, vStride, oStride, lseStride,
-        dqStride, dkStride, dvStride, doStride;
-
-    cudnnDataType_t dataType;
-    if (q.dtype() == phi::DataType::FLOAT16) {
-      dataType = CUDNN_DATA_HALF;
-    } else if (q.dtype() == phi::DataType::BFLOAT16) {
-      dataType = CUDNN_DATA_BFLOAT16;
-    } else if (q.dtype() == phi::DataType::FLOAT32) {
-      dataType = CUDNN_DATA_FLOAT;
-    } else {
-      PADDLE_THROW(common::errors::InvalidArgument(
-          "flash_attn_bwd receive input with dtype == %s",
-          phi::DataTypeToString(q.dtype())));
-    }
-
-    cudnnHandle_t cudnn;
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnCreate(&cudnn));
-
-    cudnnFlashAttnDescriptor_t flashAttnDesc;
-    cudnnTensorDescriptor_t q_desc, k_desc, v_desc, o_desc, m_desc, lse_desc,
-        dq_desc, dk_desc, dv_desc, do_desc;
-
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateFlashAttnDescriptor(&flashAttnDesc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&q_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&k_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&v_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&o_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&lse_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&dq_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&dk_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&dv_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&do_desc));
-
-    copyDimsAndStrides(q, qShape, qStride);
-    copyDimsAndStrides(kdq, dqShape, dqStride);
-
-    copyDimsAndStrides(k, kShape, kStride);
-    copyDimsAndStrides(kdk, dkShape, dkStride);
-
-    copyDimsAndStrides(v, vShape, vStride);
-    copyDimsAndStrides(kdv, dvShape, dvStride);
-
-    copyDimsAndStrides(out, oShape, oStride);
-    copyDimsAndStrides(dout, doShape, doStride);
-    copyDimsAndStrides(softmax_lse, lseShape, lseStride);
-
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        q_desc, dataType, nb_dims, qShape.data(), qStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        k_desc, dataType, nb_dims, kShape.data(), kStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        v_desc, dataType, nb_dims, vShape.data(), vStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        o_desc, dataType, nb_dims, oShape.data(), oStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnSetTensorNdDescriptor_lowerbound_2(
-            lse_desc,
-            CUDNN_DATA_FLOAT,
-            nb_dims - 1,
-            lseShape.data(),
-            lseStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        dq_desc, dataType, nb_dims, dqShape.data(), dqStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        dk_desc, dataType, nb_dims, dkShape.data(), dkStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        dv_desc, dataType, nb_dims, dvShape.data(), dvStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        do_desc, dataType, nb_dims, doShape.data(), doStride.data()));
-
-    if (attn_mask) {
-      PADDLE_ENFORCE_NE(causal,
-                        true,
-                        phi::errors::InvalidArgument(
-                            "When attn_mask is set, causal can not be true."));
-
-      PADDLE_ENFORCE_EQ(
-          (attn_mask.get_ptr())->dtype(),
-          q.dtype(),
-          phi::errors::InvalidArgument(
-              "attn_mask is expected to have the same data type with q."));
-
-      std::vector<int32_t> mShape;
-      std::vector<int32_t> mStride;
-      PADDLE_ENFORCE_GPU_SUCCESS(
-          phi::dynload::cudnnCreateTensorDescriptor(&m_desc));
-      copyDimsAndStrides(attn_mask.get(), mShape, mStride);
-      PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-          m_desc, dataType, nb_dims, mShape.data(), mStride.data()));
-    }
-
-    size_t size_tmpbuf = 0;
-
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnGetFlashAttnBuffers(cudnn,
-                                               flashAttnDesc,
-                                               batch_size,
-                                               num_heads,
-                                               max_seqlen_q,
-                                               max_seqlen_k,
-                                               head_size,
-                                               total_q,
-                                               true,
-                                               true,
-                                               &size_tmpbuf,
-                                               flashAttnInfo.imp_mode));
-
-    auto workspace =
-        phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(size_tmpbuf)});
-
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnFlashAttnBackward(
-        cudnn,
-        flashAttnDesc,
-        flashAttnInfo,
-        q_desc,
-        k_desc,
-        v_desc,
-        o_desc,
-        attn_mask.get_ptr() ? m_desc : nullptr,
-        lse_desc,
-        dq_desc,
-        dk_desc,
-        dv_desc,
-        do_desc,
-        q.data(),
-        k.data(),
-        v.data(),
-        out.data(),
-        dout.data(),
-        softmax_lse.data<float>(),
-        attn_mask.get_ptr() ? (attn_mask.get_ptr())->data() : nullptr,
-        cu_seqlens_q.data<int>(),
-        cu_seqlens_k.data<int>(),
-        nullptr,
-        nullptr,
-        nullptr,
-        workspace.data(),
-        kdq->data(),
-        kdk->data(),
-        kdv->data()));
-
-    auto destroy_tensor_desc = [&](cudnnTensorDescriptor_t desc) {
-      if (desc) {
-        PADDLE_ENFORCE_GPU_SUCCESS(
-            phi::dynload::cudnnDestroyTensorDescriptor(desc));
-      }
-    };
-
-    phi::dynload::cudnnDestroyFlashAttnDescriptor(flashAttnDesc);
-    destroy_tensor_desc(q_desc);
-    destroy_tensor_desc(k_desc);
-    destroy_tensor_desc(v_desc);
-    destroy_tensor_desc(o_desc);
-    destroy_tensor_desc(lse_desc);
-    if (attn_mask) {
-      destroy_tensor_desc(m_desc);
-    }
-    destroy_tensor_desc(dq_desc);
-    destroy_tensor_desc(dk_desc);
-    destroy_tensor_desc(dv_desc);
-    destroy_tensor_desc(do_desc);
-
-    flashAttnDesc = nullptr;
-    q_desc = nullptr;
-    k_desc = nullptr;
-    v_desc = nullptr;
-    o_desc = nullptr;
-    lse_desc = nullptr;
-    if (attn_mask) {
-      m_desc = nullptr;
-    }
-    dq_desc = nullptr;
-    dk_desc = nullptr;
-    dv_desc = nullptr;
-    do_desc = nullptr;
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "flash_attn_bwd receive input with dtype == %s",
+        phi::DataTypeToString(q.dtype())));
   }
+
+  ixAttnBkdTensorDesc q_desc, k_desc, v_desc, o_desc, m_desc, lse_desc, dq_desc,
+      dk_desc, dv_desc, do_desc;
+  SetIxAttnBkdTensor(&q_desc, q, dataType);
+  SetIxAttnBkdTensor(&k_desc, k, dataType);
+  SetIxAttnBkdTensor(&v_desc, v, dataType);
+  SetIxAttnBkdTensor(&o_desc, out, dataType);
+  if (attn_mask) {
+    PADDLE_ENFORCE_NE(causal,
+                      true,
+                      phi::errors::InvalidArgument(
+                          "When attn_mask is set, causal can not be true."));
+
+    PADDLE_ENFORCE_EQ(
+        (attn_mask.get_ptr())->dtype(),
+        q.dtype(),
+        phi::errors::InvalidArgument(
+            "attn_mask is expected to have the same data type with q."));
+
+    SetIxAttnBkdTensor(&m_desc, attn_mask.get_ptr(), dataType);
+  }
+  SetIxAttnBkdTensor(&lse_desc, softmax_lse, IXATTNBKD_DATA_FLOAT);
+  SetIxAttnBkdTensor(&dq_desc, kdq, dataType);
+  SetIxAttnBkdTensor(&dk_desc, kdk, dataType);
+  SetIxAttnBkdTensor(&dv_desc, kdv, dataType);
+  SetIxAttnBkdTensor(&do_desc, dout, dataType);
+
+  size_t size_tmpbuf = 0;
+  PADDLE_IXATTNBKD_CHECK(
+      ixAttnBkdGetFlashAttnBwdBuffSize(batch_size,
+                                       num_heads,
+                                       num_heads_k,
+                                       max_seqlen_q,
+                                       max_seqlen_k,
+                                       head_size,
+                                       head_size_v,
+                                       total_q,
+                                       true,
+                                       &size_tmpbuf,
+                                       ixAttnbkdInfo.imp_mode));
+
+  auto workspace =
+      phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(size_tmpbuf)});
+  PADDLE_IXATTNBKD_CHECK(ixAttnBkdFlashAttnBackward(
+      ixAttnbkdInfo,
+      q_desc,
+      k_desc,
+      v_desc,
+      o_desc,
+      m_desc,
+      lse_desc,
+      dq_desc,
+      dk_desc,
+      dv_desc,
+      do_desc,
+      q.data(),
+      k.data(),
+      v.data(),
+      out.data(),
+      dout.data(),
+      attn_mask.get_ptr() ? (attn_mask.get_ptr())->data() : nullptr,
+      nullptr,
+      nullptr,
+      cu_seqlens_q.data<int>(),
+      cu_seqlens_k.data<int>(),
+      softmax_lse.data<float>(),
+      workspace.data(),
+      kdq->data(),
+      kdk->data(),
+      kdv->data()));
+
   if (!is_mha) {
     if (dk) {
       dk_tmp.Resize(dk_dv_shape);
@@ -939,318 +726,108 @@ void FlashAttnGradBaseKernel(
             << ", causal: " << causal;
   }
 
-  if (FLAGS_enable_ixattnbkd) {
-    // ixattnbkd bwd
-    ixAttnBkdConfigInfo ixAttnbkdInfo;
-    ixAttnbkdInfo.stream = dev_ctx.stream();
-    ixAttnbkdInfo.softmax_scale = softmax_scale;
-    ixAttnbkdInfo.dropout_prob = dropout;
-    ixAttnbkdInfo.is_causal = causal;
-    ixAttnbkdInfo.causal_mode = 0;
-    // ixAttnbkdInfo.is_alibi              = use_alibi;
-    // ixAttnbkdInfo.alibi_mode            = alibi_mode;
-    ixAttnbkdInfo.return_softmax_lse = false;
-    ixAttnbkdInfo.philox_args =
-        *(reinterpret_cast<ixAttnBkdPhiloxState*>(&philox_state));
-    ixAttnbkdInfo.imp_mode =
-        FLAGS_imp_mode ? IXATTNBKD_FATTN_MEM_MODE : IXATTNBKD_FATTN_PERF_MODE;
-    ixAttnbkdInfo.is_unpad = false;
-    ixAttnbkdInfo.batch = batch_size;
-    ixAttnbkdInfo.max_seq_len_src = seqlen_q;
-    ixAttnbkdInfo.max_seq_len_trg = seqlen_k;
-    ixAttnbkdInfo.accuracy_first = accuracy_first;
+  ixAttnBkdConfigInfo ixAttnbkdInfo;
+  ixAttnbkdInfo.stream = dev_ctx.stream();
+  ixAttnbkdInfo.softmax_scale = softmax_scale;
+  ixAttnbkdInfo.dropout_prob = dropout;
+  ixAttnbkdInfo.is_causal = causal;
+  ixAttnbkdInfo.causal_mode = 0;
+  // ixAttnbkdInfo.is_alibi              = use_alibi;
+  // ixAttnbkdInfo.alibi_mode            = alibi_mode;
+  ixAttnbkdInfo.return_softmax_lse = false;
+  ixAttnbkdInfo.philox_args =
+      *(reinterpret_cast<ixAttnBkdPhiloxState*>(&philox_state));
+  ixAttnbkdInfo.imp_mode =
+      FLAGS_imp_mode ? IXATTNBKD_FATTN_MEM_MODE : IXATTNBKD_FATTN_PERF_MODE;
+  ixAttnbkdInfo.is_unpad = false;
+  ixAttnbkdInfo.batch = batch_size;
+  ixAttnbkdInfo.max_seq_len_src = seqlen_q;
+  ixAttnbkdInfo.max_seq_len_trg = seqlen_k;
+  ixAttnbkdInfo.accuracy_first = accuracy_first;
 
-    ixAttnBkdDataType_t dataType;
-    if (q.dtype() == phi::DataType::FLOAT16) {
-      dataType = IXATTNBKD_DATA_HALF;
-    } else if (q.dtype() == phi::DataType::BFLOAT16) {
-      dataType = IXATTNBKD_DATA_BF16;
-    } else if (q.dtype() == phi::DataType::FLOAT32) {
-      dataType = IXATTNBKD_DATA_FLOAT;
-    } else {
-      PADDLE_THROW(common::errors::InvalidArgument(
-          "flash_attn_bwd receive input with dtype == %s",
-          phi::DataTypeToString(q.dtype())));
-    }
-
-    ixAttnBkdTensorDesc q_desc, k_desc, v_desc, o_desc, m_desc, lse_desc,
-        dq_desc, dk_desc, dv_desc, do_desc;
-    SetIxAttnBkdTensor(&q_desc, q, dataType);
-    SetIxAttnBkdTensor(&k_desc, k, dataType);
-    SetIxAttnBkdTensor(&v_desc, v, dataType);
-    SetIxAttnBkdTensor(&o_desc, out, dataType);
-    if (attn_mask) {
-      PADDLE_ENFORCE_NE(causal,
-                        true,
-                        phi::errors::InvalidArgument(
-                            "When attn_mask is set, causal can not be true."));
-
-      PADDLE_ENFORCE_EQ(
-          (attn_mask.get_ptr())->dtype(),
-          q.dtype(),
-          phi::errors::InvalidArgument(
-              "attn_mask is expected to have the same data type with q."));
-
-      SetIxAttnBkdTensor(&m_desc, attn_mask.get_ptr(), dataType);
-    }
-    SetIxAttnBkdTensor(&lse_desc, softmax_lse, IXATTNBKD_DATA_FLOAT);
-    SetIxAttnBkdTensor(&dq_desc, dq, dataType);
-    SetIxAttnBkdTensor(&dk_desc, kdq, dataType);
-    SetIxAttnBkdTensor(&dv_desc, kdv, dataType);
-    SetIxAttnBkdTensor(&do_desc, dout, dataType);
-
-    size_t size_tmpbuf = 0;
-    PADDLE_IXATTNBKD_CHECK(
-        ixAttnBkdGetFlashAttnBwdBuffSize(batch_size,
-                                         num_heads,
-                                         num_heads_k,
-                                         seqlen_q,
-                                         seqlen_k,
-                                         head_size,
-                                         head_size_v,
-                                         total_q,
-                                         false,
-                                         &size_tmpbuf,
-                                         ixAttnbkdInfo.imp_mode));
-
-    auto workspace =
-        phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(size_tmpbuf)});
-    PADDLE_IXATTNBKD_CHECK(ixAttnBkdFlashAttnBackward(
-        ixAttnbkdInfo,
-        q_desc,
-        k_desc,
-        v_desc,
-        o_desc,
-        m_desc,
-        lse_desc,
-        dq_desc,
-        dk_desc,
-        dv_desc,
-        do_desc,
-        q.data(),
-        k.data(),
-        v.data(),
-        out.data(),
-        dout.data(),
-        attn_mask.get_ptr() ? (attn_mask.get_ptr())->data() : nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        softmax_lse.data<float>(),
-        workspace.data(),
-        kdq->data(),
-        kdk->data(),
-        kdv->data()));
-
+  ixAttnBkdDataType_t dataType;
+  if (q.dtype() == phi::DataType::FLOAT16) {
+    dataType = IXATTNBKD_DATA_HALF;
+  } else if (q.dtype() == phi::DataType::BFLOAT16) {
+    dataType = IXATTNBKD_DATA_BF16;
+  } else if (q.dtype() == phi::DataType::FLOAT32) {
+    dataType = IXATTNBKD_DATA_FLOAT;
   } else {
-    // ixdnn bwd
-    cudnnFlashAttnConfigInfo flashAttnInfo;
-    flashAttnInfo.softmax_scale = std::sqrt(1.f / head_size);
-    flashAttnInfo.dropout_prob = dropout;
-    flashAttnInfo.is_causal = causal;
-    flashAttnInfo.causal_mode = 0;
-    // flashAttnInfo.is_alibi              = use_alibi;
-    // flashAttnInfo.alibi_mode            = alibi_mode;
-    flashAttnInfo.return_softmax_lse = false;
-    flashAttnInfo.philox_args =
-        *(reinterpret_cast<cudnnPhiloxCudaState*>(&philox_state));
-    flashAttnInfo.imp_mode =
-        FLAGS_imp_mode ? CUDNN_FATTN_LEAST_MEM_MODE : CUDNN_FATTN_BALANCE_MODE;
-    flashAttnInfo.is_unpad = false;
-    flashAttnInfo.batch = batch_size;
-    flashAttnInfo.max_seq_len_src = seqlen_q;
-    flashAttnInfo.max_seq_len_trg = seqlen_k;
-    flashAttnInfo.accuracy_first = accuracy_first;
-
-    int32_t nb_dims = 4;
-    std::vector<int32_t> qShape, kShape, vShape, oShape, lseShape, dqShape,
-        dkShape, dvShape, doShape;
-    std::vector<int32_t> qStride, kStride, vStride, oStride, lseStride,
-        dqStride, dkStride, dvStride, doStride;
-
-    cudnnDataType_t dataType;
-    if (q.dtype() == phi::DataType::FLOAT16) {
-      dataType = CUDNN_DATA_HALF;
-    } else if (q.dtype() == phi::DataType::BFLOAT16) {
-      dataType = CUDNN_DATA_BFLOAT16;
-    } else if (q.dtype() == phi::DataType::FLOAT32) {
-      dataType = CUDNN_DATA_FLOAT;
-    } else {
-      PADDLE_THROW(common::errors::InvalidArgument(
-          "flash_attn_bwd receive input with dtype == %s",
-          phi::DataTypeToString(q.dtype())));
-    }
-
-    cudnnHandle_t cudnn;
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnCreate(&cudnn));
-
-    cudnnFlashAttnDescriptor_t flashAttnDesc;
-    cudnnTensorDescriptor_t q_desc, k_desc, v_desc, o_desc, m_desc, lse_desc,
-        dq_desc, dk_desc, dv_desc, do_desc;
-
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateFlashAttnDescriptor(&flashAttnDesc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&q_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&k_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&v_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&o_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&lse_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&dq_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&dk_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&dv_desc));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnCreateTensorDescriptor(&do_desc));
-
-    copyDimsAndStrides(q, qShape, qStride);
-    copyDimsAndStrides(kdq, dqShape, dqStride);
-
-    copyDimsAndStrides(k, kShape, kStride);
-    copyDimsAndStrides(kdk, dkShape, dkStride);
-
-    copyDimsAndStrides(v, vShape, vStride);
-    copyDimsAndStrides(kdv, dvShape, dvStride);
-
-    copyDimsAndStrides(out, oShape, oStride);
-    copyDimsAndStrides(dout, doShape, doStride);
-    copyDimsAndStrides(softmax_lse, lseShape, lseStride);
-
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        q_desc, dataType, nb_dims, qShape.data(), qStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        k_desc, dataType, nb_dims, kShape.data(), kStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        v_desc, dataType, nb_dims, vShape.data(), vStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        o_desc, dataType, nb_dims, oShape.data(), oStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnSetTensorNdDescriptor(lse_desc,
-                                                 CUDNN_DATA_FLOAT,
-                                                 nb_dims - 1,
-                                                 lseShape.data(),
-                                                 lseStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        dq_desc, dataType, nb_dims, dqShape.data(), dqStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        dk_desc, dataType, nb_dims, dkShape.data(), dkStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        dv_desc, dataType, nb_dims, dvShape.data(), dvStride.data()));
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-        do_desc, dataType, nb_dims, doShape.data(), doStride.data()));
-
-    if (attn_mask) {
-      PADDLE_ENFORCE_NE(causal,
-                        true,
-                        phi::errors::InvalidArgument(
-                            "When attn_mask is set, causal can not be true."));
-
-      PADDLE_ENFORCE_EQ(
-          (attn_mask.get_ptr())->dtype(),
-          q.dtype(),
-          phi::errors::InvalidArgument(
-              "attn_mask is expected to have the same data type with q."));
-
-      std::vector<int32_t> mShape;
-      std::vector<int32_t> mStride;
-      PADDLE_ENFORCE_GPU_SUCCESS(
-          phi::dynload::cudnnCreateTensorDescriptor(&m_desc));
-      copyDimsAndStrides(attn_mask.get(), mShape, mStride);
-      PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnSetTensorNdDescriptor(
-          m_desc, dataType, nb_dims, mShape.data(), mStride.data()));
-    }
-
-    size_t size_tmpbuf = 0;
-
-    PADDLE_ENFORCE_GPU_SUCCESS(
-        phi::dynload::cudnnGetFlashAttnBuffers(cudnn,
-                                               flashAttnDesc,
-                                               batch_size,
-                                               num_heads,
-                                               seqlen_q,
-                                               seqlen_k,
-                                               head_size,
-                                               total_q,
-                                               false,
-                                               true,
-                                               &size_tmpbuf,
-                                               flashAttnInfo.imp_mode));
-    auto workspace =
-        phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(size_tmpbuf)});
-
-    PADDLE_ENFORCE_GPU_SUCCESS(phi::dynload::cudnnFlashAttnBackward(
-        cudnn,
-        flashAttnDesc,
-        flashAttnInfo,
-        q_desc,
-        k_desc,
-        v_desc,
-        o_desc,
-        attn_mask.get_ptr() ? m_desc : nullptr,
-        lse_desc,
-        dq_desc,
-        dk_desc,
-        dv_desc,
-        do_desc,
-        q.data(),
-        k.data(),
-        v.data(),
-        out.data(),
-        dout.data(),
-        softmax_lse.data<float>(),
-        attn_mask.get_ptr() ? (attn_mask.get_ptr())->data() : nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        nullptr,
-        workspace.data(),
-        kdq->data(),
-        kdk->data(),
-        kdv->data()));
-
-    auto destroy_tensor_desc = [&](cudnnTensorDescriptor_t desc) {
-      if (desc) {
-        PADDLE_ENFORCE_GPU_SUCCESS(
-            phi::dynload::cudnnDestroyTensorDescriptor(desc));
-      }
-    };
-
-    phi::dynload::cudnnDestroyFlashAttnDescriptor(flashAttnDesc);
-    destroy_tensor_desc(q_desc);
-    destroy_tensor_desc(k_desc);
-    destroy_tensor_desc(v_desc);
-    destroy_tensor_desc(o_desc);
-    destroy_tensor_desc(lse_desc);
-    if (attn_mask) {
-      destroy_tensor_desc(m_desc);
-    }
-    destroy_tensor_desc(dq_desc);
-    destroy_tensor_desc(dk_desc);
-    destroy_tensor_desc(dv_desc);
-    destroy_tensor_desc(do_desc);
-
-    flashAttnDesc = nullptr;
-    q_desc = nullptr;
-    k_desc = nullptr;
-    v_desc = nullptr;
-    o_desc = nullptr;
-    lse_desc = nullptr;
-    if (attn_mask) {
-      m_desc = nullptr;
-    }
-    dq_desc = nullptr;
-    dk_desc = nullptr;
-    dv_desc = nullptr;
-    do_desc = nullptr;
+    PADDLE_THROW(common::errors::InvalidArgument(
+        "flash_attn_bwd receive input with dtype == %s",
+        phi::DataTypeToString(q.dtype())));
   }
+
+  ixAttnBkdTensorDesc q_desc, k_desc, v_desc, o_desc, m_desc, lse_desc, dq_desc,
+      dk_desc, dv_desc, do_desc;
+  SetIxAttnBkdTensor(&q_desc, q, dataType);
+  SetIxAttnBkdTensor(&k_desc, k, dataType);
+  SetIxAttnBkdTensor(&v_desc, v, dataType);
+  SetIxAttnBkdTensor(&o_desc, out, dataType);
+  if (attn_mask) {
+    PADDLE_ENFORCE_NE(causal,
+                      true,
+                      phi::errors::InvalidArgument(
+                          "When attn_mask is set, causal can not be true."));
+
+    PADDLE_ENFORCE_EQ(
+        (attn_mask.get_ptr())->dtype(),
+        q.dtype(),
+        phi::errors::InvalidArgument(
+            "attn_mask is expected to have the same data type with q."));
+
+    SetIxAttnBkdTensor(&m_desc, attn_mask.get_ptr(), dataType);
+  }
+  SetIxAttnBkdTensor(&lse_desc, softmax_lse, IXATTNBKD_DATA_FLOAT);
+  SetIxAttnBkdTensor(&dq_desc, dq, dataType);
+  SetIxAttnBkdTensor(&dk_desc, kdq, dataType);
+  SetIxAttnBkdTensor(&dv_desc, kdv, dataType);
+  SetIxAttnBkdTensor(&do_desc, dout, dataType);
+
+  size_t size_tmpbuf = 0;
+  PADDLE_IXATTNBKD_CHECK(
+      ixAttnBkdGetFlashAttnBwdBuffSize(batch_size,
+                                       num_heads,
+                                       num_heads_k,
+                                       seqlen_q,
+                                       seqlen_k,
+                                       head_size,
+                                       head_size_v,
+                                       total_q,
+                                       false,
+                                       &size_tmpbuf,
+                                       ixAttnbkdInfo.imp_mode));
+
+  auto workspace =
+      phi::Empty<uint8_t>(dev_ctx, {static_cast<int64_t>(size_tmpbuf)});
+  PADDLE_IXATTNBKD_CHECK(ixAttnBkdFlashAttnBackward(
+      ixAttnbkdInfo,
+      q_desc,
+      k_desc,
+      v_desc,
+      o_desc,
+      m_desc,
+      lse_desc,
+      dq_desc,
+      dk_desc,
+      dv_desc,
+      do_desc,
+      q.data(),
+      k.data(),
+      v.data(),
+      out.data(),
+      dout.data(),
+      attn_mask.get_ptr() ? (attn_mask.get_ptr())->data() : nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      nullptr,
+      softmax_lse.data<float>(),
+      workspace.data(),
+      kdq->data(),
+      kdk->data(),
+      kdv->data()));
+
   if (!is_mha) {
     if (dk) {
       dk_tmp.Resize(dk_dv_shape);
