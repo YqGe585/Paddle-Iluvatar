@@ -14,18 +14,12 @@
 
 #include "paddle/phi/core/kernel_registry.h"
 #include "paddle/phi/kernels/kthvalue_kernel.h"
-// #include "paddle/phi/kernels/full_kernel.h"
-// #include "paddle/phi/kernels/funcs/eigen/common.h"
-// #include "paddle/phi/kernels/funcs/eigen/eigen_function.h"
-// #include "paddle/phi/kernels/funcs/math_function.h"
-// #include "paddle/phi/kernels/funcs/top_k_function_cuda.h"
 
 PD_CUSTOM_KERNEL_REGISTER(kthvalue,
                           iluvatar_gpu,
                           ALL_LAYOUT,
                           phi::KthvalueKernel,
                           float,
-                          double,
                           int,
                           int64_t,
                           phi::dtype::bfloat16,

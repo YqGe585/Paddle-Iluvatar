@@ -12,18 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/kernels/kthvalue_grad_kernel.h"
-// #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-// #include "paddle/phi/kernels/funcs/math_function.h"
-// #include "paddle/phi/kernels/funcs/top_k_function_cuda.h"
+#include "paddle/phi/kernels/kthvalue_grad_kernel.h"
 
 PD_CUSTOM_KERNEL_REGISTER(kthvalue_grad,
                           iluvatar_gpu,
                           ALL_LAYOUT,
                           phi::KthvalueGradKernel,
                           float,
-                          double,
                           int,
                           int64_t,
                           phi::dtype::bfloat16,
