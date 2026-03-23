@@ -63,6 +63,19 @@ PD_CUSTOM_KERNEL_REGISTER(floor_divide,
                           float16,
                           bfloat16) {}
 
+PD_CUSTOM_KERNEL_REGISTER(trunc_divide,
+                          iluvatar_gpu,
+                          ALL_LAYOUT,
+                          phi::TruncDivideKernel,
+                          uint8_t,
+                          int8_t,
+                          int16_t,
+                          int,
+                          int64_t,
+                          float,
+                          float16,
+                          bfloat16) {}
+
 PD_CUSTOM_KERNEL_REGISTER(elementwise_pow,
                           iluvatar_gpu,
                           ALL_LAYOUT,
@@ -86,6 +99,9 @@ PD_CUSTOM_KERNEL_REGISTER(copysign,
                           float,
                           float16,
                           bfloat16) {}
+
+PD_CUSTOM_KERNEL_REGISTER(
+    nextafter, iluvatar_gpu, ALL_LAYOUT, phi::NextafterKernel, float) {}
 
 PD_CUSTOM_KERNEL_REGISTER(fmax,
                           iluvatar_gpu,

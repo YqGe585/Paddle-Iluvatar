@@ -13,12 +13,14 @@
 // limitations under the License.
 
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/funcs/selected_rows_functor.h"
-#include "paddle/phi/kernels/selected_rows/merge_selected_rows_kernel.h"
+#include "paddle/phi/kernels/reverse_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(merge_selected_rows,
+PD_CUSTOM_KERNEL_REGISTER(reverse_array,
                           iluvatar_gpu,
                           ALL_LAYOUT,
-                          phi::sr::MergeSelectedRowsKernel,
-                          float,
-                          double) {}
+                          phi::ReverseArrayKernel,
+                          int,
+                          uint8_t,
+                          int64_t,
+                          bool,
+                          float) {}

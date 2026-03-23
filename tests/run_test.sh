@@ -22,6 +22,43 @@ echo ""
 
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 LEGACY_TEST_PATH="${SCRIPT_DIR}/../Paddle/test/legacy_test"
+PADDLE_DIR="${SCRIPT_DIR}/../Paddle"
+# Paddle-iluvatar/patches/paddle-corex.patch (repo root = parent of tests/)
+PATCH_FILE="${SCRIPT_DIR}/../patches/paddle-corex.patch"
+COREX_PATCH_APPLIED=0
+
+apply_corex_patch() {
+  if [[ ! -f "$PATCH_FILE" ]]; then
+    echo "WARNING: $PATCH_FILE not found, skip CoreX patch."
+    return 0
+  fi
+  echo "=== Applying $(basename "$PATCH_FILE") (under $PADDLE_DIR) ==="
+  if (cd "$PADDLE_DIR" && patch -p1 --forward < "$PATCH_FILE"); then
+    COREX_PATCH_APPLIED=1
+    echo "Patch applied."
+  else
+    echo "ERROR: Failed to apply $PATCH_FILE" >&2
+    return 1
+  fi
+}
+
+revert_corex_patch() {
+  if [[ "$COREX_PATCH_APPLIED" -ne 1 ]]; then
+    return 0
+  fi
+  if [[ ! -f "$PATCH_FILE" ]]; then
+    return 0
+  fi
+  echo "=== Reverting $(basename "$PATCH_FILE") ==="
+  if (cd "$PADDLE_DIR" && patch -p1 -R < "$PATCH_FILE"); then
+    echo "Patch reverted."
+  else
+    echo "WARNING: Failed to revert patch; check $PADDLE_DIR manually." >&2
+  fi
+  COREX_PATCH_APPLIED=0
+}
+
+trap revert_corex_patch EXIT
 
 # export PATH=/usr/local/corex/bin:$PATH
 export LD_LIBRARY_PATH=/usr/local/corex/lib:${LD_LIBRARY_PATH}
@@ -49,6 +86,8 @@ export CUDA_VISIBLE_DEVICES=$LAST_GPU
 
 # export LD_PRELOAD="${LD_LIBRARY_PATH}/libcuda.so.1"
 export FLAG_SKIP_FLOAT64=1
+
+apply_corex_patch || exit 1
 
 CURRENT_DIR=$(pwd)
 PADDLE_SOURCE_DIR="${CURRENT_DIR}/../Paddle"

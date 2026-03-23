@@ -14,18 +14,16 @@
 
 #include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/impl/meshgrid_grad_kernel_impl.h"
-#include "paddle/phi/kernels/meshgrid_grad_kernel.h"
+#include "paddle/phi/kernels/impl/meshgrid_kernel_impl.h"
+#include "paddle/phi/kernels/meshgrid_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(meshgrid_grad,
+PD_CUSTOM_KERNEL_REGISTER(meshgrid,
                           iluvatar_gpu,
                           ALL_LAYOUT,
-                          phi::MeshgridGradKernel,
+                          phi::MeshgridKernel,
                           phi::dtype::float16,
                           float,
-                          double,
                           int,
                           int64_t,
                           phi::dtype::bfloat16,
-                          phi::dtype::complex<float>,
-                          phi::dtype::complex<double>) {}
+                          phi::dtype::complex<float>) {}

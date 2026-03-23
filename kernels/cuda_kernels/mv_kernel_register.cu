@@ -13,15 +13,6 @@
 // limitations under the License.
 
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/reverse_kernel.h"
+#include "paddle/phi/kernels/mv_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(reverse_array,
-                          iluvatar_gpu,
-                          ALL_LAYOUT,
-                          phi::ReverseArrayKernel,
-                          int,
-                          uint8_t,
-                          int64_t,
-                          bool,
-                          float,
-                          double) {}
+PD_CUSTOM_KERNEL_REGISTER(mv, iluvatar_gpu, ALL_LAYOUT, phi::MvKernel, float) {}

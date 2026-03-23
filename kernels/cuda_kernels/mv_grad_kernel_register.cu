@@ -12,20 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "paddle/phi/backends/gpu/gpu_context.h"
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/impl/meshgrid_kernel_impl.h"
-#include "paddle/phi/kernels/meshgrid_kernel.h"
+#include "paddle/phi/kernels/mv_grad_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(meshgrid,
-                          iluvatar_gpu,
-                          ALL_LAYOUT,
-                          phi::MeshgridKernel,
-                          phi::dtype::float16,
-                          float,
-                          double,
-                          int,
-                          int64_t,
-                          phi::dtype::bfloat16,
-                          phi::dtype::complex<float>,
-                          phi::dtype::complex<double>) {}
+PD_CUSTOM_KERNEL_REGISTER(
+    mv_grad, iluvatar_gpu, ALL_LAYOUT, phi::MvGradKernel, float) {}

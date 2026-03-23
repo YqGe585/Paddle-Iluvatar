@@ -1,4 +1,4 @@
-// Copyright (c) 2024 PaddlePaddle Authors. All Rights Reserved.
+// Copyright (c) 2022 PaddlePaddle Authors. All Rights Reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,13 +13,11 @@
 // limitations under the License.
 
 #include "paddle/phi/core/kernel_registry.h"
-#include "paddle/phi/kernels/swiglu_grad_kernel.h"
+#include "paddle/phi/kernels/funcs/selected_rows_functor.h"
+#include "paddle/phi/kernels/selected_rows/merge_selected_rows_kernel.h"
 
-PD_CUSTOM_KERNEL_REGISTER(swiglu_grad,
+PD_CUSTOM_KERNEL_REGISTER(merge_selected_rows,
                           iluvatar_gpu,
                           ALL_LAYOUT,
-                          phi::SwiGLUGradKernel,
-                          float,
-                          double,
-                          phi::dtype::float16,
-                          phi::dtype::bfloat16) {}
+                          phi::sr::MergeSelectedRowsKernel,
+                          float) {}
