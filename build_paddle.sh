@@ -105,13 +105,13 @@ PADDLE_CMAKE_ARGS+=("-DCUSTOM_DEVICE_CMAKE_ARGS=${CUSTOM_DEVICE_CMAKE_ARGS_STR}"
 
 pushd "${PADDLE_BUILD_DIR}"
 
-cmake -G Ninja "${PADDLE_CMAKE_ARGS[@]}" "${PADDLE_SOURCE_DIR}" \
-  || { echo "Error: CMake configuration failed!"; exit 1; }
+cmake -G Ninja "${PADDLE_CMAKE_ARGS[@]}" "${PADDLE_SOURCE_DIR}" 2>&1 | tee compile.log
+[[ ${PIPESTATUS[0]} -eq 0 ]] || { echo "Error: CMake configuration failed!"; exit 1; }
 
 if [[ "${PLATFORM_ID}" == "aarch64" ]]; then
-  env TARGET=ARMV8 ninja -j$(nproc) 2>&1 | tee compile.log
+  env TARGET=ARMV8 ninja -j$(nproc) 2>&1 | tee -a compile.log
 else
-  ninja -j$(nproc) 2>&1 | tee compile.log
+  ninja -j$(nproc) 2>&1 | tee -a compile.log
 fi
 [[ ${PIPESTATUS[0]} -eq 0 ]] || { echo "Error: Paddle build failed!"; exit 1; }
 popd

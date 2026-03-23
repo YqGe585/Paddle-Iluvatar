@@ -23,8 +23,7 @@ echo ""
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 LEGACY_TEST_PATH="${SCRIPT_DIR}/../Paddle/test/legacy_test"
 PADDLE_DIR="${SCRIPT_DIR}/../Paddle"
-# Paddle-iluvatar/patches/paddle-corex.patch (repo root = parent of tests/)
-PATCH_FILE="${SCRIPT_DIR}/../patches/paddle-corex.patch"
+PATCH_FILE="${SCRIPT_DIR}/../patches/test-corex.patch"
 COREX_PATCH_APPLIED=0
 
 apply_corex_patch() {
