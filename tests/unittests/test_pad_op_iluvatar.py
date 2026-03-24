@@ -58,7 +58,7 @@ class TestPadOp(OpTest):
         self.public_python_api = pad_wrapper
 
     def get_dtype(self):
-        return np.float64
+        return np.float32
 
     def test_check_output(self):
         self.check_output(check_pir=True)
@@ -267,7 +267,7 @@ class TestPaddingValueTensor3(unittest.TestCase):
             startup_prog = paddle.static.Program()
             with paddle.static.program_guard(main_prog, startup_prog):
                 x = paddle.assign(np_x).astype("float32")
-                pad_value = paddle.assign([0.0]).astype("float64")
+                pad_value = paddle.assign([0.0]).astype("float32")
                 y = paddle.nn.functional.pad(x, [0, 1, 2, 3], value=pad_value)
                 loss = y.sum()
                 optimize_ops, params_grads = paddle.optimizer.SGD(0.01).minimize(loss)
